@@ -99,7 +99,6 @@ const TEMPLATE_READMES = [
   /this project was generated (with|using) \[angular cli\]/i,
   /welcome to your new tauri app/i,
   /a new flutter project\.?\s*(## getting started)?/i,
-  /^#\s*[\w .-]+\s*$/, // just a title line
 ];
 
 const INSTRUCTION_WORDS = /\b(install|installation|run|running|usage|use it|how to (use|play|run|install)|getting started|setup|set up|download|play|controls|build|launch|open|visit|demo|try it)\b/i;

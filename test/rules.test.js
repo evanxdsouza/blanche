@@ -90,6 +90,11 @@ test('README rules', () => {
   assert.ok(ids(noImg).includes('readme-no-images'));
   assert.ok(!ids(evaluate(base({ repo: { ...base().repo, readme: README.replace('![screenshot](shot.png)', '') } }), { requireReadmeImage: false })).includes('readme-no-images'));
   assert.ok(ids(evaluate(base({ repo: { ...base().repo, readme: null } }))).includes('readme-missing'));
+  // a README that is only a title is too short, not a framework template
+  const title = evaluate(base({ repo: { ...base().repo, readme: '# 2DFormule' } }));
+  assert.ok(ids(title).includes('readme-short'));
+  assert.ok(!ids(title).includes('readme-template'));
+  assert.equal(title.findings.find((f) => f.id === 'readme-short').confidence, 'high');
 });
 
 test('school assignment -> reject', () => {
