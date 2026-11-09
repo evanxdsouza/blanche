@@ -69,3 +69,30 @@ test('stale evidence is refused', async () => {
   const r = await post(`/api/decide/${uuid(2)}`, { verdict: 'changes', note: 'Please link a build, not the repo.', evidenceVersion: 0 });
   assert.equal(r.status, 409);
 });
+
+test('journals come oldest first, commits newest first, each tagged to its journal', async () => {
+  const a = await get(`/api/analyze/${uuid(13)}`);
+  assert.equal(a.journals.length, 3);
+  assert.deepEqual(a.journals.map((j) => j.title), ['Day 1: getting started', 'Day 2: the hard part', 'Day 3: polish and ship']);
+  assert.equal(a.commits.length, 21);
+  const t = a.commits.map((c) => Date.parse(c.committedAt));
+  assert.deepEqual(t, t.slice().sort((x, y) => y - x));
+  const ids = new Set(a.journals.map((j) => j.id));
+  assert.ok(a.commits.filter((c) => c.journalId).every((c) => ids.has(c.journalId)));
+  assert.equal(a.commits.filter((c) => !c.journalId).length, 2);
+  for (const j of a.journals) assert.ok(a.commits.some((c) => c.journalId === j.id), `${j.title} has no commits`);
+});
+
+test('short diff for a ship commit; refuses commits that are not on the ship', async () => {
+  const sid = uuid(13);
+  const a = await get(`/api/analyze/${sid}`);
+  const r = await fetch(`${base}/api/diff/${sid}/${a.commits[0].sha}`);
+  assert.equal(r.status, 200);
+  const d = await r.json();
+  assert.equal(d.files[0].filename, 'src/main.js'); // biggest change first
+  assert.equal(d.files[0].patch.split('\n').length, 24);
+  assert.ok(d.files[0].cut > 0);
+  assert.equal(d.files.find((f) => f.filename.endsWith('.png')).patch, null);
+  assert.equal((await fetch(`${base}/api/diff/${sid}/${'b'.repeat(40)}`)).status, 404);
+  assert.equal((await fetch(`${base}/api/diff/${sid}/not-a-sha`)).status, 400);
+});

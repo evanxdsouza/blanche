@@ -37,7 +37,10 @@ Tokens are saved in `.blanche/config.json` (git-ignored, mode 600). You can also
    confidence level, and a link to the guideline it comes from.
 3. Ships land in buckets: **Changes**, **Reject**, **Fraud** or **Looks clean**. **Easy** collects the
    ships where the deciding finding is high confidence and nothing points the other way.
-4. Pick a ship, edit the drafted note, and send **Request changes**, **Reject** or **Move to fraud**.
+4. **Journals & commits** shows the player's journals with the commits tagged to each one, plus any
+   commits no journal claims. Switch to **Commit history** for every commit, newest first, labelled
+   with its journal. Open a commit for a short diff from GitHub (biggest files first, 24 lines each).
+5. Pick a ship, edit the drafted note, and send **Request changes**, **Reject** or **Move to fraud**.
    Blanche claims the ship and then sends the decision, the same requests the Terra review page makes.
 
 | Catches | Verdict | Guideline |

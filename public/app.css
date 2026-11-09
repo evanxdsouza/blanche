@@ -145,3 +145,47 @@ dialog .row { display: flex; justify-content: flex-end; gap: 8px; }
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--ink); color: var(--panel); padding: 10px 16px; border-radius: 10px; opacity: 0; pointer-events: none; transition: .2s; max-width: 90vw; }
 .toast.show { opacity: 1; transform: translateX(-50%); }
 .toast.error { background: var(--reject); color: #fff; }
+
+/* journals & commits */
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.history .hh { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.history .hh h3 { margin: 0; }
+.history .hh .seg { margin-left: auto; }
+.tabs.seg { display: flex; gap: 4px; }
+.tabs.seg button { font-size: 13px; padding: 4px 10px; }
+.tabs.seg button[aria-pressed="true"] { background: var(--ink); color: var(--panel); border-color: var(--ink); }
+.journal { border-left: 3px solid var(--accent); padding: 2px 0 4px 12px; margin-bottom: 18px; }
+.journal.untagged { border-left-color: var(--warn); }
+.journal .jh { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.journal .jh .muted { font-size: 12px; }
+.journal .jn { font-size: 12px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.journal .jb { margin: 6px 0 8px; white-space: pre-wrap; line-height: 1.45; font-size: 14px; overflow-wrap: anywhere; }
+.jimgs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.jimgs img { height: 72px; max-width: 140px; object-fit: cover; border-radius: 6px; border: 1px solid var(--line); }
+.commits { display: flex; flex-direction: column; gap: 4px; }
+details.commit { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+details.commit[open] { background: var(--soft); }
+details.commit summary { display: flex; gap: 10px; align-items: center; padding: 6px 10px; cursor: pointer; font-size: 13px; min-width: 0; }
+details.commit summary .msg { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+details.commit summary .when { font-size: 12px; white-space: nowrap; }
+.sha { font-size: 12px; color: var(--muted); }
+.stat { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.stat .add { color: var(--clean); }
+.stat .del { color: var(--reject); }
+.jtag { font-size: 11px; border-radius: 999px; padding: 1px 8px; background: var(--clean-bg); color: var(--clean); white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.jtag.none { background: var(--warn-bg); color: var(--warn); }
+.diff { padding: 0 10px 10px; }
+.dfile { margin-top: 8px; }
+.dfh { display: flex; gap: 8px; align-items: center; font-size: 12px; margin-bottom: 4px; min-width: 0; }
+.dfh code { overflow-wrap: anywhere; }
+.dst { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; border-radius: 4px; padding: 1px 5px; background: var(--warn-bg); color: var(--warn); }
+.dst.added { background: var(--clean-bg); color: var(--clean); }
+.dst.removed { background: var(--reject-bg); color: var(--reject); }
+pre.patch { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 0; font-size: 12px; line-height: 1.45; overflow-x: auto; }
+pre.patch span { display: block; padding: 0 10px; white-space: pre; }
+pre.patch .a { background: var(--clean-bg); }
+pre.patch .d { background: var(--reject-bg); }
+pre.patch .h { color: var(--muted); }
+pre.patch .cut { color: var(--muted); font-style: italic; }
+@media (max-width: 760px) { details.commit summary .when { display: none; } .jtag { max-width: 120px; } }

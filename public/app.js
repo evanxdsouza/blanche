@@ -311,7 +311,105 @@ function renderDetail() {
     s.screenshotUrl ? el('img', { class: 'shot', src: s.screenshotUrl, alt: 'Ship screenshot', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: (e) => e.target.remove() }) : null,
     r.readmeExcerpt ? el('details', { class: 'readme' }, el('summary', {}, 'README'), el('pre', {}, r.readmeExcerpt)) : null);
 
-  $('#detail').replaceChildren(head, links, el('div', { class: 'grid' }, el('div', {}, findings, facts), decideCard(a, tab)));
+  $('#detail').replaceChildren(head, links, el('div', { class: 'grid' }, el('div', {}, findings, facts), decideCard(a, tab)), historyCard(a));
+}
+
+// ---------- journals & commits ----------
+const when = (x) => (x ? new Date(x).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
+const diffs = new Map(); // "sid sha" -> Promise of the short diff
+const openCommits = new Set(); // "sid sha" kept open across re-renders
+
+function historyCard(a) {
+  const journals = a.journals || [];
+  const commits = a.commits || [];
+  const view = state.historyView || 'journal';
+  const byId = new Map(journals.map((j, i) => [j.id, { ...j, n: i + 1 }]));
+  const untagged = commits.filter((c) => !c.journalId);
+
+  const toggle = el('div', { class: 'tabs seg', role: 'group', 'aria-label': 'History view' },
+    [['journal', 'By journal'], ['history', 'Commit history']].map(([k, label]) =>
+      el('button', { 'aria-pressed': String(view === k), onclick: () => { state.historyView = k; renderDetail(); } }, label)));
+
+  let body;
+  if (!journals.length && !commits.length) {
+    body = el('p', { class: 'muted' }, 'Terra has no journals or commits for this ship yet.');
+  } else if (view === 'journal') {
+    body = el('div', { class: 'journals' },
+      journals.map((j, i) => {
+        const mine = commits.filter((c) => c.journalId === j.id).reverse(); // oldest first inside a journal
+        return el('section', { class: 'journal' },
+          el('div', { class: 'jh' },
+            el('span', { class: 'jn' }, `#${i + 1}`), el('strong', {}, j.title || '(untitled journal)'),
+            el('span', { class: 'muted' }, `${when(j.createdAt)} · ${hours(j.creditedSeconds)} · ${mine.length} commit${mine.length === 1 ? '' : 's'}`)),
+          j.body ? el('p', { class: 'jb' }, j.body) : null,
+          j.images.length ? el('div', { class: 'jimgs' }, j.images.slice(0, 4).map((u) =>
+            el('a', { href: u, target: '_blank', rel: 'noopener noreferrer' },
+              el('img', { src: u, alt: `Image from ${j.title || 'journal'}`, loading: 'lazy', referrerpolicy: 'no-referrer', onerror: (e) => e.target.parentNode.remove() })))) : null,
+          mine.length ? el('div', { class: 'commits' }, mine.map((c) => commitRow(a, c, null))) : el('p', { class: 'muted small' }, 'No commits tagged to this journal.'));
+      }),
+      untagged.length ? el('section', { class: 'journal untagged' },
+        el('div', { class: 'jh' }, el('strong', {}, 'Not in any journal'),
+          el('span', { class: 'muted' }, `${untagged.length} commit${untagged.length === 1 ? '' : 's'} no journal claims`)),
+        el('div', { class: 'commits' }, untagged.slice().reverse().map((c) => commitRow(a, c, null)))) : null);
+  } else {
+    body = commits.length
+      ? el('div', { class: 'commits' }, commits.map((c) => commitRow(a, c, c.journalId ? byId.get(c.journalId) : null, true)))
+      : el('p', { class: 'muted' }, 'No commits.');
+  }
+
+  const tagged = commits.length - untagged.length;
+  return el('div', { class: 'card history' },
+    el('div', { class: 'hh' },
+      el('h3', {}, `Journals (${journals.length}) & commits (${commits.length})`),
+      commits.length ? el('span', { class: 'muted small' }, `${tagged} of ${commits.length} commits tagged to a journal`) : null,
+      toggle),
+    body);
+}
+
+function commitRow(a, c, journal, showJournal) {
+  const key = `${a.sid} ${c.sha}`;
+  const box = el('div', { class: 'diff' });
+  const d = el('details', { class: 'commit', open: openCommits.has(key),
+    ontoggle: () => {
+      if (d.open) { openCommits.add(key); loadDiff(a.sid, c.sha, box); } else openCommits.delete(key);
+    } },
+  el('summary', {},
+    el('code', { class: 'sha' }, c.sha.slice(0, 7)),
+    el('span', { class: 'msg', title: c.message }, (c.message || '(no message)').split('\n')[0]),
+    showJournal ? el('span', { class: `jtag${journal ? '' : ' none'}`, title: journal ? journal.title : 'No journal claims this commit' },
+      journal ? `#${journal.n} ${journal.title || 'journal'}` : 'no journal') : null,
+    el('span', { class: 'stat' }, el('span', { class: 'add' }, `+${c.additions}`), ' ', el('span', { class: 'del' }, `−${c.deletions}`)),
+    el('span', { class: 'muted when' }, when(c.committedAt))),
+  box);
+  return d;
+}
+
+function loadDiff(sid, sha, box) {
+  if (box.dataset.loaded) return;
+  box.dataset.loaded = '1';
+  box.replaceChildren(el('p', { class: 'muted small' }, 'Loading diff…'));
+  const key = `${sid} ${sha}`;
+  if (!diffs.has(key)) diffs.set(key, api(`/api/diff/${sid}/${sha}`));
+  diffs.get(key).then((d) => box.replaceChildren(renderDiff(d)), (e) => {
+    diffs.delete(key); // let a later open try again (rate limit, GitHub hiccup)
+    delete box.dataset.loaded;
+    box.replaceChildren(el('p', { class: 'muted small' }, `Couldn't load the diff: ${e.message}`));
+  });
+}
+
+function renderDiff(d) {
+  if (!d.files.length) return el('p', { class: 'muted small' }, 'This commit changes no files.');
+  return el('div', {},
+    d.files.map((f) => el('div', { class: 'dfile' },
+      el('div', { class: 'dfh' },
+        el('span', { class: `dst ${f.status}` }, f.status), el('code', {}, f.previous ? `${f.previous} → ${f.filename}` : f.filename),
+        el('span', { class: 'stat' }, el('span', { class: 'add' }, `+${f.additions}`), ' ', el('span', { class: 'del' }, `−${f.deletions}`))),
+      f.patch == null ? el('p', { class: 'muted small' }, 'Binary or too large to show.')
+        : el('pre', { class: 'patch' }, f.patch.split('\n').map((l) =>
+          el('span', { class: l.startsWith('@@') ? 'h' : l.startsWith('+') ? 'a' : l.startsWith('-') ? 'd' : null }, l || ' ')),
+          f.cut ? el('span', { class: 'cut' }, `… ${f.cut} more line${f.cut === 1 ? '' : 's'}`) : null))),
+    d.moreFiles ? el('p', { class: 'muted small' }, `… and ${d.moreFiles} more file${d.moreFiles === 1 ? '' : 's'}`) : null,
+    d.url ? el('p', { class: 'small' }, ext(d.url, 'Full diff on GitHub')) : null);
 }
 
 function decideCard(a, tab) {

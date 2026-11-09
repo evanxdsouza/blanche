@@ -102,6 +102,7 @@ class Analyzer {
       },
       demo: { ...demo, check: demoCheck },
       repo: summarizeRepo(repo),
+      ...journalsAndCommits(d),
       problems: { changes: shipProblems(d, 'changes'), reject: shipProblems(d, 'reject'), fraud: shipProblems(d, 'fraud') },
       ...result,
       notes: {
@@ -115,6 +116,30 @@ class Analyzer {
   }
 }
 
+// The player's journals (Terra calls them devlogs) oldest first, and the commit history newest first.
+// Terra tags each commit with the journal it belongs to (devlogId); a commit whose journal isn't on
+// this ship (or has none) counts as untagged.
+function journalsAndCommits(d) {
+  const time = (x) => Date.parse(x) || 0;
+  const journals = (d.devlogs || [])
+    .map((j) => ({
+      id: j.id, title: j.title || '', body: j.body || '', createdAt: j.createdAt || null,
+      creditedSeconds: j.creditedSeconds || 0, hackatimeSeconds: j.hackatimeSeconds || 0,
+      images: (j.images || []).map((i) => i && i.url).filter(Boolean),
+    }))
+    .sort((a, b) => time(a.createdAt) - time(b.createdAt));
+  const ids = new Set(journals.map((j) => j.id));
+  const commits = (((d.evidence || {}).data || {}).commits || [])
+    .filter((c) => c && typeof c.sha === 'string')
+    .map((c) => ({
+      sha: c.sha, message: c.message || '', committedAt: c.committedAt || null,
+      author: c.authorLogin || c.authorName || null, additions: c.additions || 0, deletions: c.deletions || 0,
+      journalId: ids.has(c.devlogId) ? c.devlogId : null,
+    }))
+    .sort((a, b) => time(b.committedAt) - time(a.committedAt));
+  return { journals, commits };
+}
+
 function summarizeRepo(r) {
   if (!r) return null;
   const { readme, ...rest } = r;
@@ -122,4 +147,4 @@ function summarizeRepo(r) {
   return { ...rest, readmeStats: readme == null ? readme : analyzeReadme(readme), readmeExcerpt: readme ? readme.slice(0, 4000) : null };
 }
 
-module.exports = { Analyzer, buildCase, shipProblems, decisionSteps };
+module.exports = { Analyzer, buildCase, shipProblems, decisionSteps, journalsAndCommits };

@@ -47,6 +47,18 @@ class GitHub {
     return null;
   }
 
+  // A short diff for one commit: a few files, each patch cut to a few lines, so it reads at a glance.
+  // -> { status: 'ok', sha, files: [{ filename, status, additions, deletions, patch, cut }], moreFiles } | { status, error }
+  async commit(codeUrl, sha, { maxFiles = 12, maxLines = 24 } = {}) {
+    const ref = parseRepo(codeUrl);
+    if (!ref || ref.host !== 'github.com') return { status: 'error', error: 'Diffs only work for GitHub repos.' };
+    const r = await this.api(`/repos/${ref.owner}/${ref.name}/commits/${sha}`);
+    if (r.status === 'limited') return { status: 'limited', error: 'GitHub rate limit (add a GitHub token in Settings)' };
+    if (r.status === 404 || r.status === 422) return { status: 'missing', error: "GitHub doesn't have this commit (force-pushed away, or the repo is private)." };
+    if (r.status !== 200) return { status: 'error', error: `GitHub ${r.status}` };
+    return shortDiff(r.body, { maxFiles, maxLines });
+  }
+
   // -> { status: 'ok'|'missing'|'error'|'other-host', owner, readme, releases, codeBytes, fork, parent, ... }
   async repo(codeUrl) {
     const ref = parseRepo(codeUrl);
@@ -87,4 +99,22 @@ class GitHub {
   }
 }
 
-module.exports = { GitHub, parseRepo };
+// GitHub's commit body -> the short form above. Biggest files first; binary files have no patch.
+function shortDiff(body, { maxFiles = 12, maxLines = 24 } = {}) {
+  const all = (body.files || []).slice().sort((a, b) => (b.changes || 0) - (a.changes || 0));
+  const files = all.slice(0, maxFiles).map((f) => {
+    const lines = f.patch == null ? null : f.patch.split('\n');
+    return {
+      filename: f.filename, previous: f.previous_filename || null, status: f.status,
+      additions: f.additions || 0, deletions: f.deletions || 0,
+      patch: lines ? lines.slice(0, maxLines).join('\n') : null,
+      cut: lines ? Math.max(0, lines.length - maxLines) : 0,
+    };
+  });
+  return {
+    status: 'ok', sha: body.sha, url: body.html_url || null,
+    stats: body.stats || null, files, moreFiles: Math.max(0, all.length - files.length),
+  };
+}
+
+module.exports = { GitHub, parseRepo, shortDiff };

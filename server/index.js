@@ -88,6 +88,7 @@ function serveStatic(req, res) {
   });
 }
 
+const diffs = new Map(); // "codeUrl sha" -> short diff (commits don't change)
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 // ---------- routes ----------
@@ -125,6 +126,28 @@ async function api(req, res, url) {
     if (!UUID.test(x[1])) return send(res, 400, { error: 'bad id' });
     const a = await analyzer.analyze(x[1], { fresh: url.searchParams.get('fresh') === '1' });
     return send(res, 200, { ...a, links: links(a) });
+  }
+
+  // Short diff for one of the ship's commits. The repo comes from the ship itself and the sha must be
+  // one of its commits, so this can't be used to fetch anything else from GitHub.
+  if ((x = m(/^\/api\/diff\/([^/]+)\/([^/]+)$/)) && req.method === 'GET') {
+    const [, sid, sha] = x;
+    if (!UUID.test(sid)) return send(res, 400, { error: 'bad id' });
+    if (!/^[0-9a-f]{7,40}$/i.test(sha)) return send(res, 400, { error: 'bad commit' });
+    const a = await analyzer.analyze(sid);
+    if (!(a.commits || []).some((c) => c.sha === sha)) return send(res, 404, { error: "That commit isn't on this ship." });
+    if (!a.ship.codeUrl) return send(res, 404, { error: 'This ship has no repo.' });
+    const key = `${a.ship.codeUrl} ${sha}`;
+    let d = diffs.get(key);
+    if (!d) {
+      d = await github.commit(a.ship.codeUrl, sha);
+      if (d.status === 'ok') {
+        diffs.set(key, d);
+        if (diffs.size > 500) diffs.delete(diffs.keys().next().value);
+      }
+    }
+    if (d.status !== 'ok') return send(res, d.status === 'missing' ? 404 : 502, { error: d.error });
+    return send(res, 200, d);
   }
 
   if ((x = m(/^\/api\/decide\/([^/]+)$/)) && req.method === 'POST') {
