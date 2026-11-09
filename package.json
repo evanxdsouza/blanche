@@ -1,0 +1,13 @@
+{
+  "name": "blanche",
+  "version": "0.1.0",
+  "description": "Review dashboard for Hack Club Terra that catches the easy reviews",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/index.js",
+    "demo": "node server/index.js --demo",
+    "test": "node --test test/*.test.js"
+  }
+}

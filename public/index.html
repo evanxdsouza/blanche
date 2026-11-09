@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blanche</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <img src="icon.svg" alt="" width="26" height="26">
+      <span class="name">Blanche</span>
+      <span class="sub">Terra review dashboard</span>
+    </div>
+    <div class="controls">
+      <select id="queue" aria-label="Queue">
+        <option value="review">Review queue</option>
+        <option value="fraud">Fraud queue</option>
+      </select>
+      <button id="scan" class="primary" title="Check every unscanned ship (s)">Scan queue</button>
+      <div id="progress" class="progress" hidden><div></div><span></span></div>
+      <button id="dry" class="pill" title="In dry run, decisions only show the requests they would send">Dry run</button>
+      <button id="settings-btn" class="ghost" title="Settings">Settings</button>
+      <span id="who" class="who"></span>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main class="layout">
+    <aside class="side">
+      <nav id="buckets" class="buckets" aria-label="Buckets"></nav>
+      <input id="search" type="search" placeholder="Filter by title or user" aria-label="Filter">
+      <ol id="list" class="list"></ol>
+    </aside>
+    <section id="detail" class="detail">
+      <div class="empty">
+        <h2>Catch the easy reviews</h2>
+        <p>Scan the queue and Blanche checks every ship against the
+          <a id="guide-link" target="_blank" rel="noopener">YSWS submission guidelines</a>:
+          missing or broken demo links, demos that are only source code or a video, disallowed hosts,
+          READMEs that are missing, too short, templates or without a screenshot, school assignments,
+          and fraud signals from Terra's evidence.</p>
+        <p>Ships land in buckets. <b>Easy</b> means the deciding finding is clear-cut, so a quick look is enough.
+          Pick a ship to see the findings, the drafted note, and one-click changes, reject or move to fraud.
+          <b>Open in Verlock</b> runs the repo in a throwaway desktop.</p>
+        <p class="keys"><kbd>j</kbd>/<kbd>k</kbd> next/previous · <kbd>s</kbd> scan · <kbd>r</kbd> rescan ship · <kbd>v</kbd> Verlock</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="settings">
+    <form method="dialog" id="settings-form">
+      <h2>Settings</h2>
+      <label>Terra token
+        <input name="terraToken" type="password" autocomplete="off" placeholder="unchanged">
+        <small>On terra.hackclub.com, run <code>copy(localStorage.terra_auth_token)</code> in the browser console and paste it here. It stays on this machine (<code>.blanche/config.json</code>).</small>
+      </label>
+      <label>GitHub token <span class="opt">optional</span>
+        <input name="githubToken" type="password" autocomplete="off" placeholder="unchanged">
+        <small>Any token with public read access. Without it GitHub allows 60 requests an hour, which is about 15 ships.</small>
+      </label>
+      <label>Your Slack handle for note sign-offs
+        <input name="handle" placeholder="@you">
+      </label>
+      <fieldset>
+        <legend>Rules</legend>
+        <label class="inline">README minimum words <input name="readmeMinWords" type="number" min="0" max="2000"></label>
+        <label class="inline">Single commit counts from (hours) <input name="singleCommitHours" type="number" min="0" step="0.5"></label>
+        <label class="inline"><input name="requireReadmeImage" type="checkbox"> Ask for a screenshot in the README</label>
+      </fieldset>
+      <div class="row">
+        <button value="cancel" formnovalidate class="ghost">Cancel</button>
+        <button id="settings-save" value="save" class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
