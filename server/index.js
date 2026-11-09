@@ -248,14 +248,23 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+// BLANCHE_AUTH=proxy: the host's own login (e.g. Orchard's ingress protection) guards Blanche, so it
+// skips its password. It still only answers to the names in BLANCHE_ALLOWED_HOSTS, so the app can't be
+// reached past the login by its bare IP or another name.
+const PROXY_AUTH = process.env.BLANCHE_AUTH === 'proxy';
 const LOOPBACK = ['127.0.0.1', 'localhost', '::1'];
 if (require.main === module) {
-  if (!LOOPBACK.includes(HOST) && !PASSWORD && !DEMO) {
-    console.error(`Refusing to listen on ${HOST} without BLANCHE_PASSWORD: anyone who can reach it could act with your Terra token.`);
+  if (PROXY_AUTH && !(process.env.BLANCHE_ALLOWED_HOSTS || '').trim()) {
+    console.error('BLANCHE_AUTH=proxy needs BLANCHE_ALLOWED_HOSTS: the public host name(s) the login proxy serves Blanche on.');
+    process.exit(1);
+  }
+  if (!LOOPBACK.includes(HOST) && !PASSWORD && !PROXY_AUTH && !DEMO) {
+    console.error(`Refusing to listen on ${HOST} without a login: set BLANCHE_PASSWORD, or BLANCHE_AUTH=proxy if a login proxy sits in front. Otherwise anyone who can reach it could act with your Terra token.`);
     process.exit(1);
   }
   server.listen(PORT, HOST, () => {
     console.log(`Blanche ${DEMO ? '(demo mode, sample ships) ' : ''}on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+    console.log(`Login: ${PASSWORD ? 'Blanche password' : PROXY_AUTH ? `proxy (answers to ${process.env.BLANCHE_ALLOWED_HOSTS})` : 'none (local only)'}`);
     if (!DEMO && !terraToken()) console.log('No Terra token yet: open the dashboard and add it in Settings.');
   });
 }

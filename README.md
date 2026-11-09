@@ -97,8 +97,13 @@ first two as secrets:
 | `TERRA_TOKEN` | Your Terra token. It expires every 7 days, so update it when Blanche says it's expired. |
 | `GITHUB_TOKEN` | Optional, recommended. |
 
-Everyone with the password acts as the account that owns `TERRA_TOKEN`, so only share it with people who
-should review as you. `/healthz` is the only unauthenticated path. Settings changed in the UI are
+If your host puts its own login in front of the app (like Orchard's ingress protection), use that instead
+of `BLANCHE_PASSWORD`: set `BLANCHE_AUTH=proxy` and `BLANCHE_ALLOWED_HOSTS` to the host name(s) the proxy
+forwards with, comma-separated. Blanche then answers to no other name, so it can't be reached around the
+login by IP. It refuses to start in this mode without `BLANCHE_ALLOWED_HOSTS`.
+
+Everyone who can get past the login acts as the account that owns `TERRA_TOKEN`, so only give it to people
+who should review as you. `/healthz` is the only unauthenticated path. Settings changed in the UI are
 written to `/data`, which is lost on a restart unless you mount a volume there, so set tokens as
 environment variables instead.
 
