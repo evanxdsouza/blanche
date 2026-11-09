@@ -3,6 +3,7 @@
 //   npm start          real Terra (needs your Terra token, set in Settings or TERRA_TOKEN)
 //   npm run demo       sample ships, nothing leaves the machine
 const http = require('node:http');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { Terra, SITE } = require('./terra');
@@ -202,10 +203,41 @@ function links(a) {
   };
 }
 
+// ---------- password (for hosting) ----------
+// With BLANCHE_PASSWORD set, every request needs HTTP Basic auth (any username, that password).
+// Failed attempts are throttled across the whole server so the password can't be brute forced.
+const PASSWORD = process.env.BLANCHE_PASSWORD || '';
+const failures = [];
+function authorized(req) {
+  if (!PASSWORD) return true;
+  const m = /^Basic\s+(.+)$/i.exec(req.headers.authorization || '');
+  if (!m) return false;
+  const decoded = Buffer.from(m[1], 'base64').toString('utf8');
+  const given = crypto.createHash('sha256').update(decoded.slice(decoded.indexOf(':') + 1)).digest();
+  const want = crypto.createHash('sha256').update(PASSWORD).digest();
+  return crypto.timingSafeEqual(given, want);
+}
+function throttled() {
+  const now = Date.now();
+  while (failures.length && now - failures[0] > 60e3) failures.shift();
+  return failures.length >= 20;
+}
+
 const server = http.createServer(async (req, res) => {
-  const host = (req.headers.host || '').replace(/:\d+$/, '');
-  if (!allowedHosts.has(host)) return send(res, 421, { error: 'unknown host' }); // DNS rebinding
   const url = new URL(req.url, 'http://x');
+  if (url.pathname === '/healthz') return send(res, 200, { ok: true });
+  if (PASSWORD) {
+    if (throttled()) return send(res, 429, { error: 'Too many wrong passwords. Try again in a minute.' });
+    if (!authorized(req)) {
+      if (req.headers.authorization) failures.push(Date.now());
+      res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="Blanche", charset="UTF-8"', 'Content-Type': 'text/plain' });
+      return res.end('Blanche needs its password.');
+    }
+  } else {
+    // unauthenticated, so it must only answer to localhost names (DNS rebinding)
+    const host = (req.headers.host || '').replace(/:\d+$/, '');
+    if (!allowedHosts.has(host)) return send(res, 421, { error: 'unknown host' });
+  }
   if (!url.pathname.startsWith('/api/')) return serveStatic(req, res);
   // anything that changes state needs a header a cross-site form or image can't send
   if (req.method !== 'GET' && req.headers['x-blanche'] !== '1') return send(res, 403, { error: 'missing X-Blanche header' });
@@ -216,7 +248,12 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+const LOOPBACK = ['127.0.0.1', 'localhost', '::1'];
 if (require.main === module) {
+  if (!LOOPBACK.includes(HOST) && !PASSWORD && !DEMO) {
+    console.error(`Refusing to listen on ${HOST} without BLANCHE_PASSWORD: anyone who can reach it could act with your Terra token.`);
+    process.exit(1);
+  }
   server.listen(PORT, HOST, () => {
     console.log(`Blanche ${DEMO ? '(demo mode, sample ships) ' : ''}on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
     if (!DEMO && !terraToken()) console.log('No Terra token yet: open the dashboard and add it in Settings.');

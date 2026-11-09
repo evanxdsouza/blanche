@@ -86,6 +86,22 @@ Set `VERLOCK_URL` to use a different deployment.
 
 Blanche flags; you decide. Fraud and reject findings are suggestions to check, not proof.
 
+## Hosting
+
+The included `Dockerfile` runs Blanche on port 8790. Set these environment variables, and store the
+first two as secrets:
+
+| Variable | |
+| --- | --- |
+| `BLANCHE_PASSWORD` | Required when hosted. Every page asks for it (any username). Blanche refuses to start on a public address without it. |
+| `TERRA_TOKEN` | Your Terra token. It expires every 7 days, so update it when Blanche says it's expired. |
+| `GITHUB_TOKEN` | Optional, recommended. |
+
+Everyone with the password acts as the account that owns `TERRA_TOKEN`, so only share it with people who
+should review as you. `/healthz` is the only unauthenticated path. Settings changed in the UI are
+written to `/data`, which is lost on a restart unless you mount a volume there, so set tokens as
+environment variables instead.
+
 ## Keyboard
 
 `j` / `k` next and previous ship · `s` scan · `r` rescan the open ship · `v` open in Verlock
