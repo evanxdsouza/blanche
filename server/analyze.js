@@ -1,6 +1,6 @@
 // Gathers everything about one ship (Terra + GitHub + the live demo link), runs the rules,
 // and builds the requests for a decision.
-const { evaluate, composeNote, classifyDemo } = require('./rules');
+const { evaluate, summarize, composeNote, classifyDemo } = require('./rules');
 
 function buildCase(d, repo, demoCheck) {
   const s = d.shipment || {};
@@ -55,7 +55,51 @@ function shipProblems(d, verdict) {
   return p;
 }
 
-function decisionSteps(d, verdict, { note, internalNote }) {
+// What an approval needs, from the ship as Terra has it now (see docs: "Review rules the page enforces").
+const BLOCKING = ['changes', 'reject', 'fraud'];
+function approveNeeds(d) {
+  const s = d.shipment || {};
+  const ev = (d.evidence && d.evidence.data) || {};
+  const sm = Number((d.votes || {}).suggestedMultiplier);
+  const fs = d.fraudSuggestion;
+  return {
+    videoOptional: !!(d.viewer || {}).videoOptional,
+    multiplier: Number.isFinite(sm) ? Math.min(1.5, Math.max(0.8, Math.round(sm * 100) / 100)) : 1,
+    creditedSeconds: (ev.time || {}).creditedSeconds || s.hackatimeSeconds || 0,
+    dangerFlags: (d.flags || []).filter((f) => f.severity === 'danger' && !f.dismissedAt && f.kind !== 'double_dip')
+      .map((f) => ({ kind: f.kind, title: f.title || f.kind })),
+    needsUpdateJustification: (ev.unifiedUrlMatches || []).length > 0,
+    deflationSeconds: fs && fs.seconds > 0 ? fs.seconds : 0,
+    deflationReason: fs && fs.seconds > 0 ? `Fraud review: ${fs.reason || ''}`.trim() : '',
+  };
+}
+
+// Checks an approval the way Terra's review page does, plus Blanche's own rule: every blocking finding
+// has to be ignored first. -> list of problems (empty = ok)
+function approveProblems(d, b, { blocking = [] } = {}) {
+  const need = approveNeeds(d);
+  const p = [];
+  if (blocking.length) p.push(`Blanche still flags it (${blocking.join('; ')}): ignore those findings first`);
+  const m = Number(b.multiplier);
+  if (!(m >= 0.8 && m <= 1.5)) p.push('the multiplier has to be between 0.8 and 1.5');
+  const built = String(b.builtWhat || '').trim();
+  if (built.length < 30 || built.length > 1000) p.push('"What they built" needs 30 to 1000 characters');
+  if (String(b.projectReview || '').trim().length < 80) p.push('the justification needs 80+ characters');
+  if (need.needsUpdateJustification && String(b.updateJustification || '').trim().length < 40) {
+    p.push('the repo was also submitted to another program, so the update justification needs 40+ characters');
+  }
+  const acks = b.flagReasons || {};
+  for (const f of need.dangerFlags) {
+    if (String(acks[f.kind] || '').trim().length < 10) p.push(`acknowledge the "${f.title}" flag (10+ characters)`);
+  }
+  const defl = Number(b.deflationSeconds || 0);
+  if (!(defl >= 0) || defl > need.creditedSeconds) p.push('the hours cut has to be between 0 and the credited hours');
+  if (defl > 0 && String(b.deflationReason || '').trim().length < 1) p.push('give a reason for the hours cut');
+  if (!need.videoOptional && !b.video) p.push('Terra needs a test video for your account: attach one');
+  return p;
+}
+
+function decisionSteps(d, verdict, { note, internalNote, form }) {
   const s = d.shipment;
   const sid = s.id;
   const claim = { method: 'POST', path: `/review/shipment/${sid}/claim`, body: { queue: 'review', takeover: false } };
@@ -66,20 +110,75 @@ function decisionSteps(d, verdict, { note, internalNote }) {
     return [claim, { method: 'POST', path: `/review/shipment/${sid}/${verdict}`,
       body: { evidenceVersion: s.evidenceVersion, noteToMaker: note, videoUrl: null, internalNote: internalNote || '' } }];
   }
+  if (verdict === 'approve') {
+    const need = approveNeeds(d);
+    const b = form || {};
+    const defl = Math.round(Number(b.deflationSeconds || 0));
+    return [
+      claim,
+      ...need.dangerFlags.map((f) => ({ method: 'POST', path: `/review/shipment/${sid}/flags/${encodeURIComponent(f.kind)}/dismiss`,
+        body: { reason: String((b.flagReasons || {})[f.kind] || '').trim() } })),
+      ...(b.video ? [{ method: 'UPLOAD', path: `/review/shipment/${sid}/video`, video: b.video }] : []),
+      { method: 'POST', path: `/review/shipment/${sid}/approve`, body: {
+        evidenceVersion: s.evidenceVersion,
+        deflationSeconds: defl, cropDeflationSeconds: defl,
+        deflationReason: defl > 0 ? String(b.deflationReason || '').trim() : '',
+        payoutMultiplier: Number(b.multiplier),
+        noteToMaker: note,
+        videoUrl: b.video ? '<from the video upload>' : null,
+        builtWhat: String(b.builtWhat).trim(),
+        projectReview: String(b.projectReview).trim(),
+        updateJustification: need.needsUpdateJustification ? String(b.updateJustification || '').trim() : '',
+      } },
+    ];
+  }
   throw new Error(`unknown verdict ${verdict}`);
 }
 
 class Analyzer {
-  constructor({ terra, github, checkDemo, settings }) {
+  constructor({ terra, github, checkDemo, settings, ignores }) {
     this.terra = terra;
     this.github = github;
     this.checkDemo = checkDemo;
     this.settings = settings;
-    this.cache = new Map(); // sid -> result
+    this.cache = new Map(); // sid -> result as the rules found it
+    this.cases = new Map(); // sid -> the case the rules ran on (to redo notes after an ignore)
+    this.ignores = ignores || { get: () => ({}) }; // sid -> { findingId: { reason, at } }
+  }
+
+  // The result with the reviewer's ignored findings taken out of the verdict. Ignored findings stay in the
+  // list (marked) so they can be undone.
+  view(sid) {
+    const out = this.cache.get(sid);
+    if (!out) return null;
+    const ign = this.ignores.get(sid) || {};
+    const findings = out.findings.map((f) => (ign[f.id] ? { ...f, ignored: ign[f.id] } : f));
+    const live = findings.filter((f) => !f.ignored);
+    const r = summarize(live.slice(), this.cases.get(sid));
+    const c = this.cases.get(sid);
+    const opts = this.settings();
+    const blocking = live.filter((f) => BLOCKING.includes(f.verdict));
+    return {
+      ...out, findings, verdict: r.verdict, easy: r.easy, top: r.top,
+      ignoredCount: findings.length - live.length,
+      before: findings.length !== live.length ? { verdict: out.verdict, easy: out.easy } : null,
+      problems: { ...out.problems, approve: [...out.problems.approve, ...(blocking.length ? [`Blanche still flags it: ignore ${blocking.length === 1 ? 'that finding' : `those ${blocking.length} findings`} first`] : [])] },
+      notes: {
+        ...out.notes,
+        changes: composeNote({ ...r, findings: live, verdict: 'changes' }, c, opts),
+        reject: composeNote({ ...r, findings: live, verdict: 'reject' }, c, opts),
+        fraud: composeNote({ ...r, findings: live, verdict: 'fraud' }, c, opts),
+      },
+    };
+  }
+
+  blockingFindings(sid) {
+    const v = this.view(sid);
+    return v ? v.findings.filter((f) => !f.ignored && BLOCKING.includes(f.verdict)).map((f) => f.title) : [];
   }
 
   async analyze(sid, { fresh = false } = {}) {
-    if (!fresh && this.cache.has(sid)) return this.cache.get(sid);
+    if (!fresh && this.cache.has(sid)) return this.view(sid);
     const d = await this.terra.shipment(sid);
     const p = d.project || {};
     const demo = classifyDemo(p.demoUrl);
@@ -103,7 +202,8 @@ class Analyzer {
       demo: { ...demo, check: demoCheck },
       repo: summarizeRepo(repo),
       ...journalsAndCommits(d),
-      problems: { changes: shipProblems(d, 'changes'), reject: shipProblems(d, 'reject'), fraud: shipProblems(d, 'fraud') },
+      problems: { changes: shipProblems(d, 'changes'), reject: shipProblems(d, 'reject'), fraud: shipProblems(d, 'fraud'), approve: shipProblems(d, 'approve') },
+      approve: { ...approveNeeds(d), builtWhat: (c.description || '').trim().slice(0, 1000), noteToMaker: approveNote(c, opts) },
       ...result,
       notes: {
         changes: composeNote({ ...result, verdict: 'changes' }, c, opts),
@@ -112,7 +212,8 @@ class Analyzer {
       },
     };
     this.cache.set(sid, out);
-    return out;
+    this.cases.set(sid, c);
+    return this.view(sid);
   }
 }
 
@@ -140,6 +241,11 @@ function journalsAndCommits(d) {
   return { journals, commits };
 }
 
+function approveNote(c, opts) {
+  const handle = (opts.handle || '').trim();
+  return `Nice work on ${c.title ? `"${c.title}"` : 'this'}! Approved.${handle ? `\n\nIf you have any questions DM ${handle}` : ''}`;
+}
+
 function summarizeRepo(r) {
   if (!r) return null;
   const { readme, ...rest } = r;
@@ -147,4 +253,4 @@ function summarizeRepo(r) {
   return { ...rest, readmeStats: readme == null ? readme : analyzeReadme(readme), readmeExcerpt: readme ? readme.slice(0, 4000) : null };
 }
 
-module.exports = { Analyzer, buildCase, shipProblems, decisionSteps, journalsAndCommits };
+module.exports = { Analyzer, buildCase, shipProblems, decisionSteps, journalsAndCommits, approveNeeds, approveProblems, BLOCKING };

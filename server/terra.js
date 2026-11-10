@@ -14,7 +14,23 @@ const WRITES = [
   ['POST', new RegExp(`^/review/shipment/${ID}/claim/heartbeat$`)],
   ['POST', new RegExp(`^/review/shipment/${ID}/(changes|reject|send)$`)],
   ['POST', new RegExp(`^/review/project/${ID}/notes$`)],
+  ['POST', new RegExp(`^/review/shipment/${ID}/approve$`)],
+  ['POST', new RegExp(`^/review/shipment/${ID}/flags/[A-Za-z0-9_%.-]+/dismiss$`)],
 ];
+const UPLOADS = [new RegExp(`^/review/shipment/${ID}/video$`)];
+const MAX_VIDEO = 104857600; // Terra's limit: 100 MiB
+
+// The upload answer's shape isn't documented, so take the URL from the likely fields, else any string
+// that looks like a video on Terra's asset host. null = not found (and then nothing gets approved).
+function videoUrlFrom(data) {
+  if (!data || typeof data !== 'object') return null;
+  for (const k of ['videoUrl', 'url']) if (typeof data[k] === 'string' && /^https:\/\//.test(data[k])) return data[k];
+  for (const v of Object.values(data)) {
+    if (typeof v === 'string' && /^https:\/\/[^/]*hackclub[^/]*\/.+\.(mp4|webm|mov)$/i.test(v)) return v;
+    if (v && typeof v === 'object') { const u = videoUrlFrom(v); if (u) return u; }
+  }
+  return null;
+}
 
 class TerraError extends Error {
   constructor(status, msg, body) {
@@ -99,6 +115,39 @@ class Terra {
     });
   }
 
+  // Review video upload (multipart, fields in the order Terra's page sends them). `file` is a Blob read
+  // from disk, so the video never sits in memory. Sent once, logged without the file.
+  upload(p, { file, type, size }) {
+    if (!UPLOADS.some((re) => re.test(p))) throw new TerraError(400, `Blanche doesn't upload to ${p}`);
+    if (!(size > 0) || size > MAX_VIDEO) throw new TerraError(400, 'The video has to be under 100 MB.');
+    return this.paced(async () => {
+      const entry = { at: new Date().toISOString(), method: 'UPLOAD', path: p, body: { type, size } };
+      try {
+        if (!this.token) throw new TerraError(401, 'No Terra token. Add it in Settings.');
+        const form = new FormData();
+        form.append('outcome', 'small');
+        form.append('detail', '');
+        form.append('compressMs', '0');
+        form.append('sourceBytes', String(size));
+        form.append('sourceType', type);
+        form.append('file', file, `review.${type.split('/')[1] || 'mp4'}`);
+        const r = await fetch(`${API}${p}`, {
+          method: 'POST', body: form, redirect: 'manual', signal: AbortSignal.timeout(15 * 60e3),
+          headers: { Authorization: `Bearer ${this.token}` },
+        });
+        const text = await r.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+        if (!r.ok) throw new TerraError(r.status, (data && data.error) || `Terra ${r.status} on the video upload`, data);
+        this.log({ ...entry, status: 'ok', answer: data });
+        return data;
+      } catch (e) {
+        this.log({ ...entry, status: e.status || 'no answer', error: e.message, answer: e.body });
+        throw e;
+      }
+    });
+  }
+
   log(entry) {
     if (!this.logFile) return;
     fs.mkdirSync(path.dirname(this.logFile), { recursive: true });
@@ -115,4 +164,4 @@ class Terra {
   shipment(id) { return this.get(`/review/shipment/${id}`); }
 }
 
-module.exports = { Terra, TerraError, API, SITE };
+module.exports = { Terra, TerraError, API, SITE, MAX_VIDEO, videoUrlFrom };

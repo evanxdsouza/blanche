@@ -145,9 +145,13 @@ class FakeTerra {
   }
   async write(method, path, body) {
     this.writes.push({ method, path, body });
-    const m = path.match(/shipment\/([0-9a-f-]{36})\/(changes|reject|send)$/);
+    const m = path.match(/shipment\/([0-9a-f-]{36})\/(changes|reject|send|approve)$/);
     if (m) this.done.set(m[1], m[2]);
     return { ok: true, demo: true };
+  }
+  async upload(path, { size, type }) {
+    this.writes.push({ method: 'UPLOAD', path, body: { size, type } });
+    return { ok: true, url: 'https://terra.hackclub-assets.com/00000000-demo.mp4' };
   }
 }
 

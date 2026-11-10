@@ -42,6 +42,11 @@ Tokens are saved in `.blanche/config.json` (git-ignored, mode 600). You can also
    with its journal. Open a commit for a short diff from GitHub (biggest files first, 24 lines each).
 5. Pick a ship, edit the drafted note, and send **Request changes**, **Reject** or **Move to fraud**.
    Blanche claims the ship and then sends the decision, the same requests the Terra review page makes.
+6. When Blanche got a finding wrong, press **Ignore** on it (with an optional reason). Ignored findings
+   stop counting, so the ship moves buckets; **Undo** brings it back. Once nothing blocks it any more,
+   **Approve** opens: attach the test video, say what they built and how you tested it, acknowledge any
+   Terra danger flags, and set the multiplier and any hours cut. Blanche claims the ship, acknowledges the
+   flags, uploads the video and approves, checking the same rules as Terra's review page first.
 
 | Catches | Verdict | Guideline |
 | --- | --- | --- |
@@ -75,12 +80,17 @@ Set `VERLOCK_URL` to use a different deployment.
 
 - **Dry run is on by default.** Decisions only show the requests they would send. Turn it off in the
   header to send for real.
-- Approving isn't supported: it needs a test video and a full justification, so do it in Terra.
-  Rejections ask for confirmation, because they're final.
+- Approving only opens once every changes, reject and fraud finding on the ship has been ignored, and
+  needs a test video (unless your account doesn't), a justification and an acknowledgement for each
+  Terra danger flag. If Terra's answer to the video upload has no video URL, Blanche stops before
+  approving. Approvals and rejections ask for confirmation.
+- Ignored findings are saved in `ignored.json` next to the settings (in `/data` when hosted, so mount a
+  volume there to keep them across restarts).
 - Before sending, Blanche re-reads the ship. It refuses if someone else has claimed it, it's on hold,
   its evidence changed since the scan, or Terra's own rules wouldn't allow the decision (like a 4th
   round of changes). Each write is sent once, never retried, and logged to `.blanche/writes.jsonl`.
-- It only sends requests on a fixed list (claim, release, changes, reject, move, notes), and stays under
+- It only sends requests on a fixed list (claim, release, changes, reject, move, notes, approve, flag
+  acknowledgements, review video), and stays under
   Terra's limit of 100 requests a minute.
 - The server listens on 127.0.0.1 only. It rejects requests for other host names (DNS rebinding),
   and writes need an `X-Blanche` header that a cross-site form can't send.

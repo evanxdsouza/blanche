@@ -267,7 +267,7 @@ function renderDetail() {
   const a = state.analyses.get(state.selected);
   if (!a) return;
   const s = a.ship;
-  const tab = state.verdictTab || (['changes', 'reject', 'fraud'].includes(a.verdict) ? a.verdict : 'changes');
+  const tab = state.verdictTab || (['changes', 'reject', 'fraud'].includes(a.verdict) ? a.verdict : 'approve');
   state.verdictTab = tab;
 
   const head = el('div', { class: 'head' },
@@ -279,6 +279,7 @@ function renderDetail() {
       s.platforms?.length ? el('span', {}, s.platforms.join(', ')) : null,
       s.isUpdate ? el('span', {}, 'update') : null,
       s.changesRounds ? el('span', {}, `${s.changesRounds} change round(s) before`) : null,
+      a.before ? el('span', { class: 'was' }, `Blanche said ${VERDICT_LABEL[a.before.verdict]} · ${a.ignoredCount} ignored`) : null,
       el('span', {}, `scanned ${new Date(a.analyzedAt).toLocaleTimeString()}`)));
 
   const L = a.links;
@@ -290,10 +291,7 @@ function renderDetail() {
     el('button', { onclick: () => rescan(a.sid) }, 'Rescan'));
 
   const findings = el('div', { class: 'card' }, el('h3', {}, `Findings (${a.findings.length})`),
-    a.findings.length ? el('ul', { class: 'findings' }, a.findings.map((f) => el('li', { class: f.verdict },
-      el('div', { class: 'ft' }, el('span', { class: `tag ${f.verdict}` }, VERDICT_LABEL[f.verdict]), f.title, el('span', { class: 'conf' }, f.confidence)),
-      f.detail ? el('div', { class: 'fd' }, f.detail) : null,
-      f.guideline ? el('div', { class: 'fg' }, ext(f.guideline.url, f.guideline.title)) : null)))
+    a.findings.length ? el('ul', { class: 'findings' }, a.findings.map((f) => findingRow(a, f)))
       : el('p', {}, 'Nothing caught. This one needs a real review: open it in Verlock or test the demo.'));
 
   const r = a.repo || {};
@@ -412,16 +410,53 @@ function renderDiff(d) {
     d.url ? el('p', { class: 'small' }, ext(d.url, 'Full diff on GitHub')) : null);
 }
 
+// One finding. Blocking ones (changes / reject / fraud) can be ignored when Blanche got it wrong; an
+// ignored finding stops counting toward the verdict and can be undone.
+const BLOCKING = ['changes', 'reject', 'fraud'];
+function findingRow(a, f) {
+  const ignorable = BLOCKING.includes(f.verdict);
+  const act = el('span', { class: 'fa' });
+  const ignore = (reason) => setIgnore(a, f.id, true, reason);
+  if (f.ignored) {
+    act.append(el('button', { class: 'link', onclick: () => setIgnore(a, f.id, false) }, 'Undo'));
+  } else if (ignorable) {
+    act.append(el('button', { class: 'link', title: 'Blanche got this one wrong: stop counting it', onclick: () => {
+      const input = el('input', { type: 'text', placeholder: 'Why? (optional)', 'aria-label': `Why ignore "${f.title}"`, maxlength: 500,
+        onkeydown: (e) => { if (e.key === 'Enter') ignore(input.value); if (e.key === 'Escape') renderDetail(); } });
+      act.replaceChildren(input, el('button', { onclick: () => ignore(input.value) }, 'Ignore'), el('button', { class: 'link', onclick: () => renderDetail() }, 'Cancel'));
+      input.focus();
+    } }, 'Ignore'));
+  }
+  return el('li', { class: `${f.verdict}${f.ignored ? ' ignored' : ''}` },
+    el('div', { class: 'ft' }, el('span', { class: `tag ${f.verdict}` }, VERDICT_LABEL[f.verdict]), el('span', { class: 'fx' }, f.title),
+      el('span', { class: 'conf' }, f.confidence), f.ignored ? el('span', { class: 'tag none' }, 'ignored') : null, act),
+    f.ignored && f.ignored.reason ? el('div', { class: 'fd' }, `Ignored: ${f.ignored.reason}`) : null,
+    f.detail ? el('div', { class: 'fd' }, f.detail) : null,
+    f.guideline ? el('div', { class: 'fg' }, ext(f.guideline.url, f.guideline.title)) : null);
+}
+
+async function setIgnore(a, findingId, ignore, reason) {
+  try {
+    const v = await api(`/api/ignore/${a.sid}`, { method: 'POST', body: { findingId, ignore, reason } });
+    state.analyses.set(a.sid, v);
+    // once nothing blocks any more, the natural next step is approving
+    if (ignore && !v.problems.approve.length && v.verdict === 'clean') state.verdictTab = 'approve';
+    render(); renderDetail();
+  } catch (e) { toast(e.message, true); }
+}
+
 function decideCard(a, tab) {
   const dry = state.status.dryRun;
-  const tabs = el('div', { class: 'tabs', role: 'group', 'aria-label': 'Decision' }, [['changes', 'Request changes'], ['reject', 'Reject'], ['fraud', 'Move to fraud']].map(([k, label]) =>
-    el('button', { class: k, 'aria-pressed': String(tab === k), onclick: () => { state.verdictTab = k; renderDetail(); } }, label)));
+  const tabs = el('div', { class: 'tabs', role: 'group', 'aria-label': 'Decision' },
+    [['approve', 'Approve'], ['changes', 'Request changes'], ['reject', 'Reject'], ['fraud', 'Move to fraud']].map(([k, label]) =>
+      el('button', { class: k === 'approve' ? 'clean' : k, 'aria-pressed': String(tab === k), onclick: () => { state.verdictTab = k; renderDetail(); } }, label)));
+  if (tab === 'approve') return el('div', { class: 'card decide' }, el('h3', {}, 'Decide'), tabs, approveForm(a));
   const note = el('textarea', { id: 'note', 'aria-label': tab === 'fraud' ? 'Move note' : 'Note to the player' });
   note.value = a.notes[tab] || '';
   const internal = tab === 'fraud' ? null : el('textarea', { id: 'internal', class: 'small', 'aria-label': 'Internal note' });
   const problems = a.problems[tab] || [];
   const out = el('div');
-  const btn = el('button', { class: 'primary', onclick: () => decide(a, tab, note.value, internal && internal.value, btn, out) },
+  const btn = el('button', { class: 'primary', onclick: () => decide(a, tab, { note: note.value, internalNote: internal && internal.value }, btn, out) },
     `${dry ? 'Preview' : 'Send'} ${tab === 'changes' ? 'changes' : tab === 'reject' ? 'rejection' : 'to fraud'}`);
   return el('div', { class: 'card decide' }, el('h3', {}, 'Decide'), tabs,
     problems.length ? el('div', { class: 'problems' }, `Terra won't take this right now: ${problems.join('; ')}.`) : null,
@@ -432,25 +467,113 @@ function decideCard(a, tab) {
     out);
 }
 
-async function decide(a, verdict, note, internalNote, btn, out) {
+// What the reviewer typed into the approve form, kept per ship so switching tabs or ignoring a finding
+// doesn't throw it away. The chosen video File lives here too (uploaded to Blanche only when sent).
+const drafts = new Map();
+function approveForm(a) {
+  const need = a.approve;
+  const dry = state.status.dryRun;
+  const d = drafts.get(a.sid) || {
+    builtWhat: need.builtWhat, projectReview: '', updateJustification: '', flagReasons: {},
+    multiplier: need.multiplier, deflationHours: +(need.deflationSeconds / 3600).toFixed(2), deflationReason: need.deflationReason,
+    note: need.noteToMaker, file: null, videoId: null,
+  };
+  drafts.set(a.sid, d);
+  const problems = a.problems.approve || [];
+  const count = (min, max) => (v) => `${v.trim().length}${max ? ` / ${max}` : ''} · needs ${min}+`;
+  const field = (id, label, key, { min, max, area = true, hint } = {}) => {
+    const c = count(min, max);
+    const help = el('small', { class: 'count' }, min ? c(d[key] || '') : hint || '');
+    const input = el(area ? 'textarea' : 'input', { id, class: area ? 'mid' : null, type: area ? null : 'text', oninput: (e) => { d[key] = e.target.value; if (min) help.textContent = c(e.target.value); } });
+    input.value = d[key] || '';
+    return [el('label', { for: id }, label), input, help];
+  };
+  const flags = need.dangerFlags.map((f) => {
+    const id = `ack-${f.kind}`;
+    const input = el('input', { id, type: 'text', placeholder: 'Why this is fine (10+ characters)', oninput: (e) => { d.flagReasons[f.kind] = e.target.value; } });
+    input.value = d.flagReasons[f.kind] || '';
+    return [el('label', { for: id }, `Acknowledge Terra flag: ${f.title}`), input];
+  });
+  const fileLabel = el('small', { class: 'count' }, d.file ? `${d.file.name} · ${(d.file.size / 1048576).toFixed(1)} MB` : need.videoOptional ? 'Optional for your account.' : 'Required for your account. MP4, WebM or MOV, under 100 MB.');
+  const fileInput = el('input', { id: 'video', type: 'file', accept: 'video/mp4,video/webm,video/quicktime', onchange: (e) => {
+    const f = e.target.files[0] || null;
+    if (f && f.size > 104857600) { toast('The video has to be under 100 MB.', true); e.target.value = ''; return; }
+    d.file = f; d.videoId = null;
+    fileLabel.textContent = f ? `${f.name} · ${(f.size / 1048576).toFixed(1)} MB` : '';
+  } });
+  const num = (id, key, attrs) => {
+    const i = el('input', { id, type: 'number', ...attrs, oninput: (e) => { d[key] = e.target.value; } });
+    i.value = d[key];
+    return i;
+  };
+  const out = el('div');
+  const btn = el('button', { class: 'primary approve', disabled: problems.length > 0, onclick: () => decide(a, 'approve', d, btn, out) },
+    dry ? 'Preview approval' : 'Approve');
+  return el('div', { class: 'approve-form' },
+    problems.length ? el('div', { class: 'problems' }, `Can't approve yet: ${problems.join('; ')}.`) : null,
+    a.before ? el('p', { class: 'hint' }, `You're overriding Blanche: it said ${VERDICT_LABEL[a.before.verdict]}${a.before.easy ? ' (easy)' : ''}.`) : null,
+    el('label', { for: 'video' }, 'Test video'), fileInput, fileLabel,
+    field('built', 'What they built (shown in Airtable)', 'builtWhat', { min: 30, max: 1000 }),
+    field('review', 'Justification: how you tested it and why it passes', 'projectReview', { min: 80 }),
+    need.needsUpdateJustification ? field('update', 'Update justification (the repo was also submitted to another program)', 'updateJustification', { min: 40 }) : null,
+    flags,
+    el('div', { class: 'row2' },
+      el('div', {}, el('label', { for: 'mult' }, 'Payout multiplier'), num('mult', 'multiplier', { min: 0.8, max: 1.5, step: 0.01 }),
+        el('small', { class: 'count' }, `0.8–1.5 · community vote suggests ${need.multiplier}`)),
+      el('div', {}, el('label', { for: 'defl' }, 'Cut hours'), num('defl', 'deflationHours', { min: 0, max: +(need.creditedSeconds / 3600).toFixed(2), step: 0.1 }),
+        el('small', { class: 'count' }, `of ${hours(need.creditedSeconds)} credited`))),
+    field('deflr', 'Reason for the cut (if any)', 'deflationReason', { area: false }),
+    field('anote', 'Note to the player', 'note', {}),
+    el('div', { class: 'act' }, btn, el('span', { class: 'hint' }, dry ? 'Dry run: shows the requests without sending them.' : 'Live: claims the ship, acknowledges flags, uploads the video and approves.')),
+    out);
+}
+
+async function stageVideo(a, d) {
+  if (!d.file || d.videoId) return;
+  const r = await fetch(`/api/video/${a.sid}`, { method: 'POST', headers: { 'Content-Type': d.file.type || 'video/mp4', 'X-Blanche': '1' }, body: d.file });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `Video upload to Blanche failed (HTTP ${r.status})`);
+  d.videoId = data.id;
+}
+
+async function decide(a, verdict, input, btn, out) {
   const dry = state.status.dryRun;
   if (!dry && verdict === 'reject' && !confirm(`Reject "${a.ship.title}" for good?`)) return;
+  if (!dry && verdict === 'approve' && !confirm(`Approve "${a.ship.title}" at ${input.multiplier}x${Number(input.deflationHours) > 0 ? `, cutting ${input.deflationHours}h` : ''}?`)) return;
   btn.disabled = true;
+  const label = btn.textContent;
   try {
-    const r = await api(`/api/decide/${a.sid}`, { method: 'POST', body: { verdict, note, internalNote, dryRun: dry, evidenceVersion: a.evidenceVersion } });
+    let body;
+    if (verdict === 'approve') {
+      if (input.file && !input.videoId) btn.textContent = 'Uploading video…';
+      await stageVideo(a, input);
+      body = { verdict, note: input.note, dryRun: dry, evidenceVersion: a.evidenceVersion, form: {
+        builtWhat: input.builtWhat, projectReview: input.projectReview, updateJustification: input.updateJustification,
+        flagReasons: input.flagReasons, multiplier: Number(input.multiplier),
+        deflationSeconds: Math.round(Number(input.deflationHours || 0) * 3600), deflationReason: input.deflationReason, videoId: input.videoId,
+      } };
+    } else {
+      body = { verdict, note: input.note, internalNote: input.internalNote, dryRun: dry, evidenceVersion: a.evidenceVersion };
+    }
+    btn.textContent = label;
+    const r = await api(`/api/decide/${a.sid}`, { method: 'POST', body });
     if (r.dryRun) {
       out.replaceChildren(el('p', { class: 'hint' }, 'Dry run. These requests would be sent, in order:'),
-        el('pre', { class: 'steps' }, r.steps.map((s) => `${s.method} ${s.path}\n${JSON.stringify(s.body, null, 2)}`).join('\n\n')));
+        el('pre', { class: 'steps' }, r.steps.map((s) => s.method === 'UPLOAD'
+          ? `POST ${s.path}\n(multipart: the test video, ${(s.video.size / 1048576).toFixed(1)} MB ${s.video.type})`
+          : `${s.method} ${s.path}\n${JSON.stringify(s.body, null, 2)}`).join('\n\n')));
     } else {
-      toast(`${verdict === 'fraud' ? 'Moved to fraud' : verdict === 'reject' ? 'Rejected' : 'Changes requested'}: ${a.ship.title}`);
+      toast(`${{ fraud: 'Moved to fraud', reject: 'Rejected', changes: 'Changes requested', approve: 'Approved' }[verdict]}: ${a.ship.title}`);
+      drafts.delete(a.sid);
       state.items = state.items.filter((i) => i.id !== a.sid);
       state.analyses.delete(a.sid);
       const next = visible()[0];
       if (next) select(next.id); else { state.selected = null; render(); $('#detail').replaceChildren(el('p', { class: 'empty' }, 'Bucket cleared.')); }
     }
   } catch (e) {
+    if (verdict === 'approve' && /expired/.test(e.message)) input.videoId = null; // re-upload next time
     toast(e.message, true);
-  } finally { btn.disabled = false; }
+  } finally { btn.textContent = label; btn.disabled = verdict === 'approve' && (a.problems.approve || []).length > 0; }
 }
 
 async function rescan(sid) {

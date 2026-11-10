@@ -419,4 +419,4 @@ function composeNote(result, c, opts = {}) {
   return `Hey! Thanks for shipping ${name}. Before it can be approved, a few things need fixing:\n\n${fixes.map((f) => `- ${f.note}`).join('\n')}\n\nOnce that's done, ship it again and it'll go back in the queue.${sign}`;
 }
 
-module.exports = { DEFAULTS, classifyDemo, analyzeReadme, evaluate, composeNote, BINARY_EXT };
+module.exports = { DEFAULTS, classifyDemo, analyzeReadme, evaluate, summarize, composeNote, BINARY_EXT };

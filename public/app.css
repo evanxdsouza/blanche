@@ -189,3 +189,21 @@ pre.patch .d { background: var(--reject-bg); }
 pre.patch .h { color: var(--muted); }
 pre.patch .cut { color: var(--muted); font-style: italic; }
 @media (max-width: 760px) { details.commit summary .when { display: none; } .jtag { max-width: 120px; } }
+
+/* ignore findings & approve */
+button.link { border: 0; background: none; padding: 2px 4px; color: var(--accent); font-size: 12px; text-decoration: underline; }
+.findings .fa { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; font-weight: 400; }
+.findings .fa input { font-size: 12px; padding: 3px 6px; width: 180px; }
+.findings .fa button:not(.link) { font-size: 12px; padding: 3px 8px; }
+.findings li.ignored { border-left-color: var(--line); opacity: .7; }
+.findings li.ignored .fx { text-decoration: line-through; }
+.head .meta .was { font-size: 12px; border: 1px dashed var(--line); border-radius: 999px; padding: 1px 8px; }
+.decide .tabs { flex-wrap: wrap; }
+.decide .tabs button[aria-pressed="true"].clean { background: var(--clean-bg); border-color: var(--clean); color: var(--clean); font-weight: 600; }
+.decide textarea.mid { min-height: 80px; }
+.decide input[type=text], .decide input[type=number], .decide input[type=file] { width: 100%; }
+.decide small.count { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.decide .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+button.primary.approve { background: var(--clean); border-color: var(--clean); color: var(--accent-ink); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 760px) { .findings .fa input { width: 120px; } }

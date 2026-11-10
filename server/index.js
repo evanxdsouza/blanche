@@ -6,10 +6,10 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { Terra, SITE } = require('./terra');
+const { Terra, SITE, MAX_VIDEO, videoUrlFrom } = require('./terra');
 const { GitHub } = require('./github');
 const { checkDemo } = require('./demo-check');
-const { Analyzer, shipProblems, decisionSteps } = require('./analyze');
+const { Analyzer, shipProblems, decisionSteps, approveProblems } = require('./analyze');
 const { DEFAULTS } = require('./rules');
 const G = require('./guidelines');
 
@@ -17,6 +17,8 @@ const ROOT = path.resolve(__dirname, '..');
 const DATA = process.env.BLANCHE_DATA || path.join(ROOT, '.blanche');
 const CONFIG = path.join(DATA, 'config.json');
 const LOG = path.join(DATA, 'writes.jsonl');
+const IGNORED = path.join(DATA, 'ignored.json');
+const VIDEOS = path.join(DATA, 'videos');
 const DEMO = process.argv.includes('--demo') || process.env.BLANCHE_DEMO === '1';
 const HOST = process.env.HOST || '127.0.0.1';
 const PORT = Number(process.env.PORT || 8790);
@@ -36,6 +38,56 @@ const terraToken = () => process.env.TERRA_TOKEN || config.terraToken || '';
 const githubToken = () => process.env.GITHUB_TOKEN || config.githubToken || '';
 const settings = () => ({ ...DEFAULTS, ...(config.rules || {}), handle: config.handle || '' });
 
+// Findings the reviewer chose to ignore, per ship: { sid: { findingId: { reason, at } } }
+let ignored = (() => { try { return JSON.parse(fs.readFileSync(IGNORED, 'utf8')); } catch { return {}; } })();
+const ignores = {
+  get: (sid) => ignored[sid] || {},
+  set(sid, id, value) {
+    const cur = { ...(ignored[sid] || {}) };
+    if (value) cur[id] = value; else delete cur[id];
+    if (Object.keys(cur).length) ignored[sid] = cur; else delete ignored[sid];
+    fs.mkdirSync(DATA, { recursive: true });
+    fs.writeFileSync(IGNORED, JSON.stringify(ignored, null, 2), { mode: 0o600 });
+  },
+};
+
+// Review videos waiting for an approval: id -> { sid, file, size, type, at }. Kept on disk, dropped after use or an hour.
+const staged = new Map();
+const VIDEO_TYPES = { 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov' };
+function dropVideo(id) {
+  const v = staged.get(id);
+  staged.delete(id);
+  if (v) fs.rm(v.file, { force: true }, () => {});
+}
+setInterval(() => { for (const [id, v] of staged) if (Date.now() - v.at > 3600e3) dropVideo(id); }, 600e3).unref();
+
+async function stageVideo(req, sid) {
+  const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  if (!VIDEO_TYPES[type]) throw Object.assign(new Error('The video has to be MP4, WebM or MOV.'), { status: 415 });
+  const declared = Number(req.headers['content-length'] || 0);
+  if (declared > MAX_VIDEO) throw Object.assign(new Error('The video has to be under 100 MB.'), { status: 413 });
+  fs.mkdirSync(VIDEOS, { recursive: true });
+  const id = crypto.randomUUID();
+  const file = path.join(VIDEOS, `${id}.${VIDEO_TYPES[type]}`);
+  const out = fs.createWriteStream(file, { mode: 0o600 });
+  let size = 0;
+  try {
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > MAX_VIDEO) throw Object.assign(new Error('The video has to be under 100 MB.'), { status: 413 });
+      if (!out.write(chunk)) await new Promise((r) => out.once('drain', r));
+    }
+    await new Promise((r, j) => out.end((e) => (e ? j(e) : r())));
+  } catch (e) {
+    out.destroy();
+    fs.rm(file, { force: true }, () => {});
+    throw e;
+  }
+  if (!size) { fs.rm(file, { force: true }, () => {}); throw Object.assign(new Error('The video is empty.'), { status: 400 }); }
+  staged.set(id, { sid, file, size, type, at: Date.now() });
+  return { id, size, type };
+}
+
 // ---------- services ----------
 
 let terra, github, analyzer;
@@ -44,11 +96,11 @@ function wire() {
     const { FakeTerra, fakeGitHub, fakeCheckDemo } = require('./fixtures');
     terra = terra || new FakeTerra();
     github = fakeGitHub;
-    analyzer = new Analyzer({ terra, github, checkDemo: fakeCheckDemo, settings });
+    analyzer = new Analyzer({ terra, github, checkDemo: fakeCheckDemo, settings, ignores });
   } else {
     terra = new Terra({ token: terraToken(), logFile: LOG });
     github = new GitHub(githubToken());
-    analyzer = new Analyzer({ terra, github, checkDemo: (u) => checkDemo(u), settings });
+    analyzer = new Analyzer({ terra, github, checkDemo: (u) => checkDemo(u), settings, ignores });
   }
 }
 wire();
@@ -116,7 +168,7 @@ async function api(req, res, url) {
     const items = await terra.queue(queue, filter);
     return send(res, 200, {
       items: items.map((i) => {
-        const a = analyzer.cache.get(i.id);
+        const a = analyzer.view(i.id);
         return { ...i, analysis: a ? { verdict: a.verdict, easy: a.easy, top: a.top, count: a.findings.length } : null };
       }),
     });
@@ -150,13 +202,30 @@ async function api(req, res, url) {
     return send(res, 200, d);
   }
 
+  // Ignore (or un-ignore) one of Blanche's findings on a ship. Only changes Blanche's verdict; nothing goes to Terra.
+  if ((x = m(/^\/api\/ignore\/([^/]+)$/)) && req.method === 'POST') {
+    if (!UUID.test(x[1])) return send(res, 400, { error: 'bad id' });
+    const b = await readBody(req);
+    const a = await analyzer.analyze(x[1]);
+    if (!a.findings.some((f) => f.id === b.findingId)) return send(res, 404, { error: "That finding isn't on this ship." });
+    ignores.set(x[1], b.findingId, b.ignore === false ? null : { reason: String(b.reason || '').trim().slice(0, 500), at: new Date().toISOString() });
+    return send(res, 200, { ...analyzer.view(x[1]), links: links(a) });
+  }
+
+  // Stage a review video for an approval (raw body). Nothing is sent to Terra until the approval goes out.
+  if ((x = m(/^\/api\/video\/([^/]+)$/)) && req.method === 'POST') {
+    if (!UUID.test(x[1])) return send(res, 400, { error: 'bad id' });
+    return send(res, 200, await stageVideo(req, x[1]));
+  }
+
   if ((x = m(/^\/api\/decide\/([^/]+)$/)) && req.method === 'POST') {
     if (!UUID.test(x[1])) return send(res, 400, { error: 'bad id' });
     const b = await readBody(req);
     const verdict = b.verdict;
-    if (!['changes', 'reject', 'fraud'].includes(verdict)) return send(res, 400, { error: 'verdict must be changes, reject or fraud' });
+    if (!['changes', 'reject', 'fraud', 'approve'].includes(verdict)) return send(res, 400, { error: 'verdict must be changes, reject, fraud or approve' });
     const note = String(b.note || '').trim();
-    if (note.length < 20) return send(res, 400, { error: verdict === 'fraud' ? 'Write a move note for fraud (20+ characters).' : 'Write a note to the player (20+ characters).' });
+    if (verdict !== 'approve' && note.length < 20) return send(res, 400, { error: verdict === 'fraud' ? 'Write a move note for fraud (20+ characters).' : 'Write a note to the player (20+ characters).' });
+    if (verdict === 'approve') return approve(res, x[1], b, note);
     // always decide against the ship as it is now, not as it was when it was scanned
     const d = await terra.shipment(x[1]);
     const problems = shipProblems(d, verdict);
@@ -213,6 +282,46 @@ async function api(req, res, url) {
   }
 
   return send(res, 404, { error: 'not found' });
+}
+
+// Approve: claim, acknowledge Terra's danger flags, upload the test video, approve. Checked against the ship
+// as it is now and against Blanche's findings (all blocking ones must be ignored first).
+async function approve(res, sid, b, note) {
+  const form = { ...(b.form || {}) };
+  const video = form.videoId ? staged.get(form.videoId) : null;
+  if (form.videoId && (!video || video.sid !== sid)) return send(res, 400, { error: 'That video upload expired. Attach it again.' });
+  form.video = video ? { size: video.size, type: video.type } : null;
+  await analyzer.analyze(sid);
+  const d = await terra.shipment(sid);
+  const problems = [...shipProblems(d, 'approve'), ...approveProblems(d, form, { blocking: analyzer.blockingFindings(sid) })];
+  if (problems.length) return send(res, 409, { error: `Can't approve this ship: ${problems.join('; ')}.`, problems });
+  if (b.evidenceVersion != null && b.evidenceVersion !== d.shipment.evidenceVersion) {
+    return send(res, 409, { error: 'The ship changed since Blanche scanned it. Rescan and check again.' });
+  }
+  const steps = decisionSteps(d, 'approve', { note, form });
+  if (b.dryRun !== false) return send(res, 200, { dryRun: true, steps });
+  const done = [];
+  for (const s of steps) {
+    try {
+      if (s.method === 'UPLOAD') {
+        const answer = await terra.upload(s.path, { file: await fs.openAsBlob(video.file, { type: video.type }), type: video.type, size: video.size });
+        const url = videoUrlFrom(answer);
+        if (!url) throw new Error("Terra took the video but its answer had no video URL, so Blanche didn't approve. Approve it in Terra");
+        steps[steps.length - 1].body.videoUrl = url;
+        done.push({ ...s, answer });
+      } else {
+        done.push({ ...s, answer: await terra.write(s.method, s.path, s.body) });
+      }
+    } catch (e) {
+      if (done.length && /\/claim$/.test(done[0].path)) {
+        await terra.write('DELETE', done[0].path, undefined, { queue: 'review' }).catch(() => {});
+      }
+      return send(res, 502, { error: `${s.method} ${s.path} failed: ${e.message}. Nothing after it was sent.`, done });
+    }
+  }
+  dropVideo(form.videoId);
+  analyzer.cache.delete(sid);
+  return send(res, 200, { dryRun: false, done });
 }
 
 function links(a) {
