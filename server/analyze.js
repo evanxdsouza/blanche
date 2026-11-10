@@ -189,6 +189,7 @@ class Analyzer {
     const c = buildCase(d, repo, demoCheck);
     const opts = this.settings();
     const result = evaluate(c, opts);
+    const jc = journalsAndCommits(d);
     const out = {
       sid,
       analyzedAt: new Date().toISOString(),
@@ -201,7 +202,8 @@ class Analyzer {
       },
       demo: { ...demo, check: demoCheck },
       repo: summarizeRepo(repo),
-      ...journalsAndCommits(d),
+      ...jc,
+      reship: reshipCheck(d, result.findings, summarizeRepo(repo), demoCheck, jc),
       problems: { changes: shipProblems(d, 'changes'), reject: shipProblems(d, 'reject'), fraud: shipProblems(d, 'fraud'), approve: shipProblems(d, 'approve') },
       approve: { ...approveNeeds(d), builtWhat: (c.description || '').trim().slice(0, 1000), noteToMaker: approveNote(c, opts) },
       ...result,
@@ -241,6 +243,53 @@ function journalsAndCommits(d) {
   return { journals, commits };
 }
 
+// ---------- re-ships ----------
+// Reviewers write change requests in their own words, so match the note to topics Blanche can check
+// and report each one against today's findings, plus everything the player did since the request.
+const TOPICS = [
+  { key: 'readme', label: 'README', re: /read\s?me/i, ids: ['readme-missing', 'readme-short', 'readme-template', 'readme-no-howto', 'readme-no-images'] },
+  { key: 'screenshot', label: 'Screenshots', re: /screen\s?shots?|pictures?|images?|\bgifs?\b|photos?/i, ids: ['readme-no-images', 'screenshot-missing', 'screenshot-format'] },
+  { key: 'howto', label: 'How to run', re: /how to (run|install|play|use|build)|instructions|install/i, ids: ['readme-no-howto'] },
+  { key: 'demo', label: 'Demo link', re: /demo|playable|\blink\b|\burl\b|crash|can'?t (open|run|play|get)|doesn'?t (work|run|load|open)|blank/i, ids: ['demo-'] },
+  { key: 'release', label: 'Release build', re: /release|\bbuilds?\b|\.exe|executable|binar(y|ies)|download|appimage|\.dmg|\.apk/i, ids: ['release-missing', 'release-source-only', 'no-build'] },
+  { key: 'repo', label: 'Code on GitHub', re: /github|\brepo\b|commit|push|source code|missing .*file|\.(py|js|ts|cs|cpp|gd|java|rs|go)\b/i, ids: ['repo-missing', 'repo-none', 'repo-private', 'single-commit', 'tiny-repo'] },
+  { key: 'ai', label: 'AI use', re: /\bai\b|ai[- ]generated|chatgpt|copilot|\bllm\b|claude|gemini/i, ids: ['ai-undeclared'], manual: true },
+];
+const DECISION_LABEL = { changes: 'Changes requested', approved: 'Approved', rejected: 'Rejected', send_fraud: 'Sent to fraud', send_admin: 'Sent to an admin', release_admin: 'Back from an admin', release_fraud: 'Back from fraud' };
+
+function reshipCheck(d, findings, repo, demoCheck, { journals, commits }) {
+  const decisions = (d.decisions || [])
+    .filter((x) => x && x.createdAt)
+    .map((x) => ({ decision: x.decision, label: DECISION_LABEL[x.decision] || x.decision, at: x.createdAt,
+      reviewer: (x.reviewer && (x.reviewer.username || x.reviewer.displayName)) || x.reviewer || null, note: x.noteToMaker || '' }));
+  const last = decisions.find((x) => x.decision === 'changes');
+  if (!last) return null;
+  const since = Date.parse(last.at);
+  const newCommits = commits.filter((c) => Date.parse(c.committedAt) > since);
+  const newJournals = journals.filter((j) => Date.parse(j.createdAt) > since);
+  const has = (ids) => findings.filter((f) => ids.some((id) => (id.endsWith('-') ? f.id.startsWith(id) : f.id === id)));
+  const rs = repo && repo.readmeStats;
+  const now = {
+    readme: rs ? `${rs.words} words, ${rs.images} image${rs.images === 1 ? '' : 's'}${rs.instructions ? ', has how-to' : ''}` : rs === null ? 'no README' : null,
+    screenshot: rs ? `${rs.images} image${rs.images === 1 ? '' : 's'} in the README` : null,
+    howto: rs ? (rs.instructions ? 'README has run/install steps' : null) : null,
+    demo: demoCheck ? `demo answers ${demoCheck.status}${demoCheck.ms != null ? ` in ${(demoCheck.ms / 1000).toFixed(1)}s` : ''}` : null,
+    release: repo && repo.releases ? (repo.releases[0] ? `latest release ${repo.releases[0].tag}: ${repo.releases[0].assets.length ? repo.releases[0].assets.join(', ') : 'source only'}` : 'no releases') : null,
+    repo: `${newCommits.length} commit${newCommits.length === 1 ? '' : 's'} since the request`,
+  };
+  const topics = TOPICS.filter((t) => t.re.test(last.note)).map((t) => {
+    const still = has(t.ids);
+    // "ok" only when Blanche actually saw the thing (a README it read, releases it listed, a demo it opened)
+    let status = still.length ? 'flagged' : t.manual || now[t.key] == null ? 'check' : 'ok';
+    if (t.key === 'repo' && !still.length && !newCommits.length) status = 'check';
+    const unknown = { readme: "couldn't read the README", screenshot: "couldn't read the README", howto: 'no run/install steps found',
+      demo: "the demo wasn't opened", release: "couldn't list the releases" }[t.key];
+    return { key: t.key, label: t.label, status, findings: still.map((f) => f.id), titles: still.map((f) => f.title), now: now[t.key] || (still.length ? null : unknown || null) };
+  });
+  return { last, earlier: decisions.filter((x) => x !== last), topics, newCommits: newCommits.length, newJournals: newJournals.map((j) => j.id),
+    noCommitsSince: newCommits.length === 0 };
+}
+
 function approveNote(c, opts) {
   const handle = (opts.handle || '').trim();
   return `Nice work on ${c.title ? `"${c.title}"` : 'this'}! Approved.${handle ? `\n\nIf you have any questions DM ${handle}` : ''}`;
@@ -253,4 +302,4 @@ function summarizeRepo(r) {
   return { ...rest, readmeStats: readme == null ? readme : analyzeReadme(readme), readmeExcerpt: readme ? readme.slice(0, 4000) : null };
 }
 
-module.exports = { Analyzer, buildCase, shipProblems, decisionSteps, journalsAndCommits, approveNeeds, approveProblems, BLOCKING };
+module.exports = { Analyzer, buildCase, shipProblems, decisionSteps, journalsAndCommits, approveNeeds, approveProblems, reshipCheck, BLOCKING };

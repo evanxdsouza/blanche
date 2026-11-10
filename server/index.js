@@ -35,6 +35,13 @@ function saveConfig(c) {
 }
 let config = loadConfig();
 const terraToken = () => process.env.TERRA_TOKEN || config.terraToken || '';
+// Terra tokens are JWTs that last 7 days: read the expiry (no verification needed, it's only a reminder).
+function tokenExpiry(t) {
+  try {
+    const exp = JSON.parse(Buffer.from(String(t).split('.')[1], 'base64url').toString('utf8')).exp;
+    return Number.isFinite(exp) ? new Date(exp * 1000).toISOString() : null;
+  } catch { return null; }
+}
 const githubToken = () => process.env.GITHUB_TOKEN || config.githubToken || '';
 const settings = () => ({ ...DEFAULTS, ...(config.rules || {}), handle: config.handle || '' });
 
@@ -157,7 +164,8 @@ async function api(req, res, url) {
       try { me = await terra.me(); } catch (e) { error = e.message; }
     }
     return send(res, 200, {
-      demo: DEMO, terraToken: !!terraToken(), githubToken: !!githubToken(), me: me && (me.user || me), error,
+      demo: DEMO, terraToken: !!terraToken(), terraTokenExpires: DEMO ? null : tokenExpiry(terraToken()),
+      terraTokenFrom: process.env.TERRA_TOKEN ? 'env' : config.terraToken ? 'settings' : null, githubToken: !!githubToken(), me: me && (me.user || me), error,
       site: SITE, verlock: VERLOCK, guidelines: G.HOME, settings: settings(), dryRun: config.dryRun !== false,
     });
   }

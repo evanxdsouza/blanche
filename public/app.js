@@ -72,20 +72,40 @@ async function loadStatus() {
   state.status = await api('/api/status');
   const s = state.status;
   $('#guide-link').href = s.guidelines;
-  $('#who').textContent = s.me ? `${s.me.username}${s.me.isAdmin ? ' · admin' : ''}${s.demo ? ' · demo' : ''}` : '';
+  $('#who').replaceChildren(s.me ? `${s.me.username}${s.me.isAdmin ? ' · admin' : ''}${s.demo ? ' · demo' : ''}` : '', ' ', tokenPill(s));
   renderDry();
   const b = $('#banner');
+  const left = s.terraTokenExpires ? Date.parse(s.terraTokenExpires) - Date.now() : null;
   if (s.demo) {
     b.hidden = false; b.className = 'banner';
     b.textContent = 'Demo mode: these are sample ships and nothing is sent to Terra. Run "npm start" for the real queue.';
   } else if (!s.terraToken) {
     b.hidden = false; b.className = 'banner';
     b.textContent = 'Add your Terra token in Settings to load the queue.';
+  } else if (left != null && left <= 0) {
+    b.hidden = false; b.className = 'banner error';
+    b.textContent = `Your Terra token expired ${when(s.terraTokenExpires)}. ${tokenFix(s)}`;
   } else if (s.error) {
     b.hidden = false; b.className = 'banner error';
     b.textContent = `Terra: ${s.error}`;
+  } else if (left != null && left < 24 * 3600e3) {
+    b.hidden = false; b.className = 'banner';
+    b.textContent = `Your Terra token expires ${when(s.terraTokenExpires)}. ${tokenFix(s)}`;
   } else b.hidden = true;
 }
+
+const tokenFix = (s) => (s.terraTokenFrom === 'env'
+  ? 'Get a new one from terra.hackclub.com and update TERRA_TOKEN where Blanche is hosted.'
+  : 'Get a new one from terra.hackclub.com and paste it in Settings.');
+function tokenPill(s) {
+  if (!s.terraTokenExpires) return null;
+  const ms = Date.parse(s.terraTokenExpires) - Date.now();
+  const h = ms / 3600e3;
+  const text = ms <= 0 ? 'token expired' : h < 24 ? `token: ${Math.max(1, Math.floor(h))}h left` : `token: ${Math.floor(h / 24)}d ${Math.floor(h % 24)}h left`;
+  return el('span', { class: `tok${ms <= 0 ? ' bad' : h < 48 ? ' soon' : ''}`, title: `Terra token expires ${new Date(s.terraTokenExpires).toLocaleString()}` }, text);
+}
+// keep the countdown current without a reload
+setInterval(() => { if (state.status && state.status.terraTokenExpires) loadStatus().catch(() => {}); }, 30 * 60e3);
 
 function renderDry() {
   const d = $('#dry');
@@ -309,7 +329,37 @@ function renderDetail() {
     s.screenshotUrl ? el('img', { class: 'shot', src: s.screenshotUrl, alt: 'Ship screenshot', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: (e) => e.target.remove() }) : null,
     r.readmeExcerpt ? el('details', { class: 'readme' }, el('summary', {}, 'README'), el('pre', {}, r.readmeExcerpt)) : null);
 
-  $('#detail').replaceChildren(head, links, el('div', { class: 'grid' }, el('div', {}, findings, facts), decideCard(a, tab)), historyCard(a));
+  $('#detail').replaceChildren(head, links, el('div', { class: 'grid' }, el('div', {}, reshipCard(a), findings, facts), decideCard(a, tab)), historyCard(a));
+}
+
+// ---------- re-ships ----------
+const TOPIC_STATUS = { flagged: ['Still flagged', 'changes'], ok: ['Blanche finds nothing now', 'clean'], check: ['Check by hand', 'warn'], ignored: ['Flagged, you ignored it', 'none'] };
+function reshipCard(a) {
+  const r = a.reship;
+  if (!r) return null;
+  const ignored = new Set(a.findings.filter((f) => f.ignored).map((f) => f.id));
+  const long = r.last.note.length > 700;
+  const noteEl = el('p', { class: 'rnote' }, long ? `${r.last.note.slice(0, 700)}…` : r.last.note || '(no note)');
+  const more = long ? el('button', { class: 'link', onclick: (e) => { noteEl.textContent = r.last.note; e.target.remove(); } }, 'Show all') : null;
+  const sinceBtn = el('button', { class: 'link', onclick: () => { state.historyView = 'since'; renderDetail(); document.querySelector('.history')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } },
+    `${r.newCommits} commit${r.newCommits === 1 ? '' : 's'} and ${r.newJournals.length} journal${r.newJournals.length === 1 ? '' : 's'} since then`);
+  return el('div', { class: 'card reship' },
+    el('h3', {}, `Re-ship · ${a.ship.changesRounds || 1} change round${(a.ship.changesRounds || 1) === 1 ? '' : 's'} before`),
+    el('div', { class: 'rmeta' }, `Last request ${when(r.last.at)}${r.last.reviewer ? ` by ${r.last.reviewer}` : ''}`),
+    noteEl, more,
+    r.topics.length
+      ? el('ul', { class: 'topics' }, r.topics.map((t) => {
+        const st = t.status === 'flagged' && t.findings.every((id) => ignored.has(id)) ? 'ignored' : t.status;
+        return el('li', {},
+          el('span', { class: 'tl' }, t.label),
+          el('span', { class: `tag ${TOPIC_STATUS[st][1]}` }, TOPIC_STATUS[st][0]),
+          el('span', { class: 'tn' }, [t.titles.length ? t.titles.join(' · ') : null, t.now].filter(Boolean).join(' — ')));
+      }))
+      : el('p', { class: 'muted small' }, "Blanche couldn't tell what was asked from the note, so read it and check by hand."),
+    el('div', { class: 'rsince' }, r.noCommitsSince ? el('span', { class: 'tag changes' }, 'No commits since the request') : null, ' ', sinceBtn),
+    r.earlier.length ? el('details', { class: 'earlier' }, el('summary', {}, `Earlier decisions (${r.earlier.length})`),
+      el('ul', {}, r.earlier.map((x) => el('li', {}, el('strong', {}, x.label), ` · ${when(x.at)}${x.reviewer ? ` · ${x.reviewer}` : ''}`,
+        x.note ? el('p', { class: 'rnote' }, x.note) : null)))) : null);
 }
 
 // ---------- journals & commits ----------
@@ -324,8 +374,9 @@ function historyCard(a) {
   const byId = new Map(journals.map((j, i) => [j.id, { ...j, n: i + 1 }]));
   const untagged = commits.filter((c) => !c.journalId);
 
+  const sinceAt = a.reship ? Date.parse(a.reship.last.at) : null;
   const toggle = el('div', { class: 'tabs seg', role: 'group', 'aria-label': 'History view' },
-    [['journal', 'By journal'], ['history', 'Commit history']].map(([k, label]) =>
+    [['journal', 'By journal'], ['history', 'Commit history'], ...(a.reship ? [['since', 'Since request']] : [])].map(([k, label]) =>
       el('button', { 'aria-pressed': String(view === k), onclick: () => { state.historyView = k; renderDetail(); } }, label)));
 
   let body;
@@ -349,6 +400,16 @@ function historyCard(a) {
         el('div', { class: 'jh' }, el('strong', {}, 'Not in any journal'),
           el('span', { class: 'muted' }, `${untagged.length} commit${untagged.length === 1 ? '' : 's'} no journal claims`)),
         el('div', { class: 'commits' }, untagged.slice().reverse().map((c) => commitRow(a, c, null)))) : null);
+  } else if (view === 'since' && sinceAt) {
+    const nc = commits.filter((c) => Date.parse(c.committedAt) > sinceAt);
+    const nj = journals.map((j, i) => ({ ...j, n: i + 1 })).filter((j) => Date.parse(j.createdAt) > sinceAt);
+    body = el('div', {},
+      el('p', { class: 'muted small' }, `Since the changes request on ${when(a.reship.last.at)}:`),
+      nj.length ? nj.map((j) => el('section', { class: 'journal' },
+        el('div', { class: 'jh' }, el('span', { class: 'jn' }, `#${j.n}`), el('strong', {}, j.title || '(untitled journal)'), el('span', { class: 'muted' }, `${when(j.createdAt)} · ${hours(j.creditedSeconds)}`)),
+        j.body ? el('p', { class: 'jb' }, j.body) : null)) : el('p', { class: 'muted small' }, 'No new journals.'),
+      nc.length ? el('div', { class: 'commits' }, nc.map((c) => commitRow(a, c, c.journalId ? byId.get(c.journalId) : null, true)))
+        : el('p', { class: 'muted small' }, 'No new commits.'));
   } else {
     body = commits.length
       ? el('div', { class: 'commits' }, commits.map((c) => commitRow(a, c, c.journalId ? byId.get(c.journalId) : null, true)))
@@ -589,6 +650,21 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'k' && rows.length) select(rows[Math.max(0, idx - 1)].id);
   else if (e.key === 's') scan();
   else if (e.key === 'r' && state.selected) rescan(state.selected);
+  else if (e.key === 'i' && state.selected) {
+    // ignore the top finding that still counts: opens its reason box
+    const b = [...document.querySelectorAll('.findings li:not(.ignored) .fa button.link')].find((x) => x.textContent === 'Ignore');
+    if (!b) { toast('Nothing left to ignore on this ship.'); return e.preventDefault(); }
+    b.click();
+  } else if (e.key === 'a' && state.selected) {
+    state.verdictTab = 'approve'; renderDetail();
+    document.querySelector('.approve-form')?.scrollIntoView({ block: 'nearest' });
+    (document.querySelector('#review') || document.querySelector('#video'))?.focus();
+  } else if (e.key === 'n' && state.selected) {
+    // press the decision button: in dry run that previews, live it sends and moves to the next ship
+    const b = document.querySelector('.decide .act button.primary');
+    if (!b || b.disabled) { toast(b ? 'Fix what the Decide card lists first.' : 'Nothing to send.', true); return e.preventDefault(); }
+    b.click();
+  }
   else if (e.key === 'v' && state.selected) {
     const l = state.analyses.get(state.selected)?.links?.verlock;
     if (l) window.open(l, '_blank', 'noopener');

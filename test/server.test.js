@@ -176,3 +176,23 @@ test('double-dip ship needs an update justification to approve', async () => {
   form.updateJustification = 'This is a new version with a rewritten physics engine since the SoM ship.';
   assert.equal((await post(`/api/decide/${sid}`, { verdict: 'approve', note: '', form })).status, 200);
 });
+
+test('re-ship: last request, topics checked against today, and work since', async () => {
+  const a = await get(`/api/analyze/${uuid(6)}`);
+  const r = a.reship;
+  assert.ok(r, 'ship 6 had a changes request');
+  assert.match(r.last.note, /no screenshots/);
+  assert.equal(r.last.reviewer, 'ada_reviews');
+  const t = Object.fromEntries(r.topics.map((x) => [x.key, x.status]));
+  assert.equal(t.screenshot, 'flagged'); // README still has no images
+  assert.equal(t.readme, 'flagged');
+  assert.equal(t.howto, 'ok');
+  assert.ok(r.newCommits > 0 && r.newCommits < a.commits.length);
+  assert.equal(r.earlier.length, 1);
+  assert.equal((await get(`/api/analyze/${uuid(13)}`)).reship, null);
+});
+
+test('status reads the Terra token expiry', async () => {
+  const s = await get('/api/status');
+  assert.equal(s.terraTokenExpires, null); // demo mode
+});

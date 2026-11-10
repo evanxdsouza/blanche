@@ -117,7 +117,10 @@ function detail(s) {
       },
     },
     devlogs: journals,
-    decisions: [],
+    decisions: s.n === 6 ? [{
+      decision: 'changes', createdAt: ago(30), reviewer: { username: 'ada_reviews' },
+      noteToMaker: "Love the habit tracker! Two things before it can be approved:\n1. Your README has no screenshots, please add a picture of the app running.\n2. Add how to run it locally to the README.",
+    }, { decision: 'send_fraud', createdAt: ago(60), reviewer: { username: 'ada_reviews' }, noteToMaker: '' }] : [],
     votes: { averageStars: 5.1, round: 1, suggestedMultiplier: 1.1, list: [] },
     flags: extra.flags || [],
     fraudSuggestion: null,
