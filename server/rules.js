@@ -14,6 +14,10 @@ const DEFAULTS = {
   requireReadmeImage: true,  // no screenshot/photo in the README -> changes
   singleCommitHours: 3,      // one commit is fine for a tiny ship, not for this many hours
   burstCommitHours: 8,       // all commits inside one hour while claiming this many hours
+  fewCommitsMinHours: 5,     // "few commits for the hours" only applies from this many hours
+  fewCommitsPerHour: 0.3,    // code commits per claimed hour below this
+  megaCommitShare: 0.6,      // one commit holds this share of all changed lines
+  quietTimeShare: 0.4,       // share of tracked time on days with no commit
   tinyRepoBytes: 3000,       // code smaller than this...
   tinyRepoHours: 6,          // ...for at least this many hours
   aiShare: 0.5,              // AI time share that needs an AI declaration
@@ -321,6 +325,34 @@ function evaluate(c, opts = {}) {
     if (span != null && span < 1) {
       add({ id: 'commit-burst', verdict: 'fraud', confidence: 'medium', title: `All ${commits.length} commits within ${Math.round(span * 60)} min`,
         detail: `${hrs(c.seconds)} claimed`, guideline: G.fraud, note: '' });
+    }
+  }
+
+  // --- commit evidence (Introspect-style signals; note only, they inform the review rather than decide it) ---
+  const E = c.evidence;
+  if (E && E.counts.total >= 2) {
+    const n = E.counts;
+    const codeCommits = n.content + n.vague;
+    if (hoursClaimed >= o.fewCommitsMinHours && E.perHour != null && E.perHour < o.fewCommitsPerHour && codeCommits > 1) {
+      add({ id: 'few-commits', verdict: 'warn', confidence: 'medium', title: `Few commits for the hours: ${E.perHour.toFixed(2)} per hour`,
+        detail: `${codeCommits} code commit${codeCommits === 1 ? '' : 's'} for ${hrs(c.seconds)}. Progress is hard to verify from the history; consider an hours cut.`,
+        guideline: G.inflated, note: '' });
+    }
+    if (E.largest && codeCommits >= 3 && E.largest.share >= o.megaCommitShare) {
+      add({ id: 'mega-commit', verdict: 'warn', confidence: 'medium', title: `One commit is ${Math.round(E.largest.share * 100)}% of the code`,
+        detail: `${E.largest.sha.slice(0, 7)} "${E.largest.message}": ${E.largest.lines} lines changed`, guideline: G.codeUrl, note: '' });
+    }
+    if (n['web-upload'] >= 2 && n['web-upload'] / n.total >= 0.5) {
+      add({ id: 'web-uploads', verdict: 'warn', confidence: 'high', title: `${n['web-upload']} of ${n.total} commits uploaded through GitHub's website`,
+        detail: '"Add files via upload": the code was written elsewhere and dropped in, so the history shows little of how it was built.', guideline: G.codeUrl, note: '' });
+    }
+    if (n.total >= 4 && n.vague / n.total >= 0.5) {
+      add({ id: 'vague-messages', verdict: 'warn', confidence: 'low', title: `${n.vague} of ${n.total} commit messages say little ("update", "fix", "Update main.py")`,
+        guideline: G.codeUrl, note: '' });
+    }
+    if (E.trackedSeconds > 0 && E.quietSeconds >= 3 * 3600 && E.quietSeconds / E.trackedSeconds >= o.quietTimeShare) {
+      add({ id: 'time-without-commits', verdict: 'warn', confidence: 'low', title: `${hrs(E.quietSeconds)} of coding on days with no commits`,
+        detail: `${Math.round((E.quietSeconds / E.trackedSeconds) * 100)}% of the tracked time. Check the Commits vs coding time chart.`, guideline: G.inflated, note: '' });
     }
   }
 

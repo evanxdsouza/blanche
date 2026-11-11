@@ -1,6 +1,7 @@
 // Gathers everything about one ship (Terra + GitHub + the live demo link), runs the rules,
 // and builds the requests for a decision.
 const { evaluate, summarize, composeNote, classifyDemo } = require('./rules');
+const { commitEvidence } = require('./evidence');
 
 function buildCase(d, repo, demoCheck) {
   const s = d.shipment || {};
@@ -29,6 +30,7 @@ function buildCase(d, repo, demoCheck) {
     fraudSuggestion: d.fraudSuggestion || null,
     unifiedUrlMatches: ev.unifiedUrlMatches || [],
     commits: ev.commits || [],
+    evidence: commitEvidence(ev, { claimedSeconds: t.creditedSeconds || s.hackatimeSeconds || 0 }),
     files: ev.files || [],
     sessions: ev.sessions || [],
     time: { totalSeconds: t.totalSeconds || s.hackatimeSeconds || 0, aiSeconds: t.aiSeconds || s.aiSeconds || 0 },
@@ -85,6 +87,7 @@ function approveProblems(d, b, { blocking = [] } = {}) {
   const built = String(b.builtWhat || '').trim();
   if (built.length < 30 || built.length > 1000) p.push('"What they built" needs 30 to 1000 characters');
   if (String(b.projectReview || '').trim().length < 80) p.push('the justification needs 80+ characters');
+  if (PLACEHOLDER.test(String(b.projectReview || ''))) p.push('fill in the [bracketed] parts of the justification');
   if (need.needsUpdateJustification && String(b.updateJustification || '').trim().length < 40) {
     p.push('the repo was also submitted to another program, so the update justification needs 40+ characters');
   }
@@ -203,9 +206,11 @@ class Analyzer {
       demo: { ...demo, check: demoCheck },
       repo: summarizeRepo(repo),
       ...jc,
+      evidence: { ...c.evidence, languages: (repo && repo.languages) || null, demoStatus: demoCheck ? demoCheck.status : null },
       reship: reshipCheck(d, result.findings, summarizeRepo(repo), demoCheck, jc),
       problems: { changes: shipProblems(d, 'changes'), reject: shipProblems(d, 'reject'), fraud: shipProblems(d, 'fraud'), approve: shipProblems(d, 'approve') },
-      approve: { ...approveNeeds(d), builtWhat: (c.description || '').trim().slice(0, 1000), noteToMaker: approveNote(c, opts) },
+      approve: { ...approveNeeds(d), builtWhat: (c.description || '').trim().slice(0, 1000), noteToMaker: approveNote(c, opts),
+        projectReview: justificationDraft(c, repo, demo, demoCheck, jc) },
       ...result,
       notes: {
         changes: composeNote({ ...result, verdict: 'changes' }, c, opts),
@@ -288,6 +293,25 @@ function reshipCheck(d, findings, repo, demoCheck, { journals, commits }) {
   });
   return { last, earlier: decisions.filter((x) => x !== last), topics, newCommits: newCommits.length, newJournals: newJournals.map((j) => j.id),
     noCommitsSince: newCommits.length === 0 };
+}
+
+// Introspect-style starting point for the Airtable justification: the facts Blanche already has, with
+// [bracketed] gaps for what only the reviewer knows. Approve refuses while a [bracket] is left.
+const PLACEHOLDER = /\[(describe|what you|how you)[^\]]*\]/i;
+function justificationDraft(c, repo, demo, demoCheck, jc) {
+  const E = c.evidence || {};
+  const n = E.counts || {};
+  const langs = repo && repo.languages ? Object.entries(repo.languages).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k]) => k) : [];
+  const lines = [`They built [describe what they built]${langs.length ? ` in ${langs.join(' and ')}` : ''}.`];
+  lines.push('I tested it by [how you tested it and what worked].');
+  if (demo && demo.url) lines.push(`Demo ${demoCheck && demoCheck.status ? `answers ${demoCheck.status}` : 'is linked'} at ${demo.url}.`);
+  if (n.total) {
+    const parts = [`${n.content + n.vague} code`, n.readme ? `${n.readme} README-only` : null, n['web-upload'] ? `${n['web-upload']} web-upload` : null, n.merge ? `${n.merge} merge` : null].filter(Boolean);
+    lines.push(`The repo has ${n.total} commit${n.total === 1 ? '' : 's'} (${parts.join(', ')})${E.perHour != null ? `, ${E.perHour.toFixed(2)} code commits per claimed hour (${((c.seconds || 0) / 3600).toFixed(1)}h)` : ''}.`);
+  }
+  if (E.trackedSeconds) lines.push(`Hackatime tracked ${(E.trackedSeconds / 3600).toFixed(1)}h on ${E.codingDays} day${E.codingDays === 1 ? '' : 's'}, with commits on ${E.commitDays}.`);
+  if (jc && jc.journals.length) lines.push(`${jc.journals.length} journal${jc.journals.length === 1 ? '' : 's'}, ${jc.commits.filter((x) => x.journalId).length} of ${jc.commits.length} commits tagged to one.`);
+  return lines.join('\n');
 }
 
 function approveNote(c, opts) {

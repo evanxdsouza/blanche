@@ -40,11 +40,18 @@ Tokens are saved in `.blanche/config.json` (git-ignored, mode 600). You can also
 4. **Journals & commits** shows the player's journals with the commits tagged to each one, plus any
    commits no journal claims. Switch to **Commit history** for every commit, newest first, labelled
    with its journal. Open a commit for a short diff from GitHub (biggest files first, 24 lines each).
-5. Pick a ship, edit the drafted note, and send **Request changes**, **Reject** or **Move to fraud**.
+5. **Commit evidence** (in the spirit of [Introspect](https://introspect.sahil.ink)) sorts the commits into
+   code, README-only, GitHub web uploads, merges and vague messages, and shows commits per claimed hour,
+   the biggest commit's share of the code, and coding time on days with no commits. Two aligned charts
+   put Hackatime's coding time per day next to commits (or lines) per day; hover a day for both, or open
+   the table. It all comes from Terra's evidence, so it costs no extra requests. The thresholds are
+   Blanche's own (Settings defaults in `server/rules.js`); Introspect's aren't public.
+6. Pick a ship, edit the drafted note, and send **Request changes**, **Reject** or **Move to fraud**.
    Blanche claims the ship and then sends the decision, the same requests the Terra review page makes.
-6. When Blanche got a finding wrong, press **Ignore** on it (with an optional reason). Ignored findings
+7. When Blanche got a finding wrong, press **Ignore** on it (with an optional reason). Ignored findings
    stop counting, so the ship moves buckets; **Undo** brings it back. Once nothing blocks it any more,
-   **Approve** opens: attach the test video, say what they built and how you tested it, acknowledge any
+   **Approve** opens with a drafted justification (the facts above, with [bracketed] gaps Blanche won't
+   send until you fill them): attach the test video, say what they built and how you tested it, acknowledge any
    Terra danger flags, and set the multiplier and any hours cut. Blanche claims the ship, acknowledges the
    flags, uploads the video and approves, checking the same rules as Terra's review page first.
 
@@ -62,6 +69,7 @@ Tokens are saved in `.blanche/config.json` (git-ignored, mode 600). You can also
 | Undismissed Terra danger flags · same repo in another YSWS program (not an update) | fraud | Duplicates, Outright Fraud |
 | Fork · tiny repo for many hours · all commits within an hour · mostly AI time with no declaration · time on files never in the repo | fraud | Inflated Hours, AI |
 | Outside hackathon · tutorial wording · repo owner isn't the player · 3+ change rounds · fraud already suggested a cut | note only | |
+| Few commits for the hours · one commit is most of the code · mostly web uploads · vague messages · coding days with no commits | note only | Code URL, Inflated Hours |
 
 The thresholds (README word count, the screenshot requirement, single-commit hours) can be changed in
 Settings. The rules follow the live guidelines as of November 2026, including the newer bans on Render,

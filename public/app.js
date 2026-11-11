@@ -329,7 +329,7 @@ function renderDetail() {
     s.screenshotUrl ? el('img', { class: 'shot', src: s.screenshotUrl, alt: 'Ship screenshot', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: (e) => e.target.remove() }) : null,
     r.readmeExcerpt ? el('details', { class: 'readme' }, el('summary', {}, 'README'), el('pre', {}, r.readmeExcerpt)) : null);
 
-  $('#detail').replaceChildren(head, links, el('div', { class: 'grid' }, el('div', {}, reshipCard(a), findings, facts), decideCard(a, tab)), historyCard(a));
+  $('#detail').replaceChildren(head, links, el('div', { class: 'grid' }, el('div', {}, reshipCard(a), findings, facts), decideCard(a, tab)), evidenceCard(a), historyCard(a));
 }
 
 // ---------- re-ships ----------
@@ -360,6 +360,134 @@ function reshipCard(a) {
     r.earlier.length ? el('details', { class: 'earlier' }, el('summary', {}, `Earlier decisions (${r.earlier.length})`),
       el('ul', {}, r.earlier.map((x) => el('li', {}, el('strong', {}, x.label), ` · ${when(x.at)}${x.reviewer ? ` · ${x.reviewer}` : ''}`,
         x.note ? el('p', { class: 'rnote' }, x.note) : null)))) : null);
+}
+
+// ---------- commit evidence (Introspect-style) ----------
+const KIND_TAG = {
+  'web-upload': ['web upload', 'Uploaded through GitHub\'s website ("Add files via upload")'],
+  readme: ['README', 'Only touches the README'],
+  vague: ['vague', 'The message says little about the change'],
+  merge: ['merge', 'Merge commit'],
+};
+const SVG = 'http://www.w3.org/2000/svg';
+function svg(tag, attrs, ...kids) {
+  const n = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) n.setAttribute(k, v);
+  for (const k of kids.flat()) if (k != null) n.append(k instanceof Node ? k : String(k));
+  return n;
+}
+const shortDay = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' });
+function niceMax(v) {
+  if (v <= 0) return 1;
+  const p = 10 ** Math.floor(Math.log10(v));
+  return [1, 2, 2.5, 5, 10].map((m) => m * p).find((m) => m >= v);
+}
+
+// One single-series daily bar chart. Both charts share the same day slots so they line up; hovering a
+// day in either highlights it in both and fills the shared tooltip.
+function dayBars(days, { value, fmt, color, title, height = 120, onHover, integer = false }) {
+  // draw at the width the card really has, so text stays at its real size on a phone
+  const avail = (document.querySelector('#detail')?.clientWidth || 760) - 90;
+  const W = Math.max(280, Math.min(1100, avail)), padL = 34, padR = 6, padT = 8, padB = 18, H = height;
+  const top = Math.max(...days.map(value), 0);
+  const max = integer ? Math.max(2, Math.ceil(niceMax(top))) : niceMax(top);
+  const slot = (W - padL - padR) / Math.max(1, days.length);
+  const bw = Math.max(2, Math.min(28, slot - 2)); // 2px gap between neighbours
+  const y = (v) => padT + (H - padT - padB) * (1 - v / max);
+  const base = H - padB;
+  const root = svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'bars', role: 'img', 'aria-label': title });
+  for (const t of (integer && max % 2 ? [0, max] : [0, max / 2, max])) {
+    root.append(svg('line', { x1: padL, x2: W - padR, y1: y(t), y2: y(t), class: 'grid' }),
+      svg('text', { x: padL - 6, y: y(t) + 4, class: 'tick', 'text-anchor': 'end' }, fmt(t, true)));
+  }
+  const hl = svg('rect', { y: padT, height: base - padT, width: slot, class: 'hl', visibility: 'hidden' });
+  root.append(hl);
+  days.forEach((d, i) => {
+    const v = value(d);
+    const x = padL + i * slot + (slot - bw) / 2;
+    if (v > 0) {
+      const yt = y(v), r = Math.min(4, bw / 2, base - yt);
+      root.append(svg('path', { class: 'bar', fill: color,
+        d: `M${x},${base} V${yt + r} Q${x},${yt} ${x + r},${yt} H${x + bw - r} Q${x + bw},${yt} ${x + bw},${yt + r} V${base} Z` }));
+    }
+  });
+  root.append(svg('line', { x1: padL, x2: W - padR, y1: base, y2: base, class: 'axis' }));
+  const every = Math.ceil(days.length / Math.max(2, Math.floor(W / 90)));
+  days.forEach((d, i) => {
+    if (i % every && i !== days.length - 1) return;
+    root.append(svg('text', { x: padL + i * slot + slot / 2, y: H - 4, class: 'tick', 'text-anchor': 'middle' }, shortDay(d.date)));
+  });
+  // hit targets: the whole day column, wider than the bar
+  days.forEach((d, i) => root.append(svg('rect', { x: padL + i * slot, y: 0, width: slot, height: base, class: 'hit',
+    onmouseenter: null })));
+  root.querySelectorAll('rect.hit').forEach((r, i) => {
+    r.addEventListener('mouseenter', (e) => onHover(i, e));
+    r.addEventListener('mousemove', (e) => onHover(i, e));
+    r.addEventListener('mouseleave', () => onHover(-1));
+  });
+  root.highlight = (i) => {
+    if (i < 0) return hl.setAttribute('visibility', 'hidden');
+    hl.setAttribute('x', padL + i * slot);
+    hl.setAttribute('visibility', 'visible');
+  };
+  return root;
+}
+
+function evidenceCard(a) {
+  const E = a.evidence;
+  if (!E || (!E.counts.total && !E.trackedSeconds)) return null;
+  const n = E.counts;
+  const claimed = a.ship.seconds || 0;
+  const tile = (label, val, sub, warn) => el('div', { class: `tile${warn ? ' warn' : ''}` }, el('div', { class: 'tv' }, val), el('div', { class: 'tl' }, label), sub ? el('div', { class: 'ts' }, sub) : null);
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  const ids = new Set(a.findings.filter((f) => !f.ignored).map((f) => f.id));
+  const tiles = el('div', { class: 'tiles' },
+    tile('Commits', n.total, `${n.content + n.vague} code${n.readme ? ` · ${n.readme} README` : ''}${n.merge ? ` · ${n.merge} merge` : ''}`),
+    tile('Per claimed hour', E.perHour != null ? E.perHour.toFixed(2) : '—', `code commits over ${hours(claimed)}`, ids.has('few-commits')),
+    tile('Biggest commit', E.largest ? pct(E.largest.share) : '—', E.largest ? `of changed lines · ${E.largest.sha.slice(0, 7)}` : 'no code commits', ids.has('mega-commit')),
+    tile('Web uploads', n['web-upload'], n.total ? `${pct(n['web-upload'] / n.total)} of commits` : '', ids.has('web-uploads')),
+    tile('Vague messages', n.vague, n.total ? `${pct(n.vague / n.total)} of commits` : '', ids.has('vague-messages')),
+    tile('Busiest day', E.busiest ? pct(E.busiest.share) : '—', E.busiest ? `of lines, ${shortDay(E.busiest.date)}` : ''),
+    tile('Coding time', hours(E.trackedSeconds), `on ${E.codingDays} day${E.codingDays === 1 ? '' : 's'} · commits on ${E.commitDays}`),
+    tile('No-commit days', hours(E.quietSeconds), E.trackedSeconds ? `${pct(E.quietSeconds / E.trackedSeconds)} of coding time` : '', ids.has('time-without-commits')));
+
+  const days = E.days;
+  const mode = state.evidenceMode || 'count';
+  const tip = el('div', { class: 'vtip', role: 'status', hidden: true });
+  const charts = [];
+  const hover = (i, e) => {
+    charts.forEach((c) => c.highlight(i));
+    if (i < 0) { tip.hidden = true; return; }
+    const d = days[i];
+    tip.replaceChildren(el('strong', {}, shortDay(d.date)),
+      el('div', {}, el('span', { class: 'sw s1' }), `Coding ${hours(d.seconds)}`),
+      el('div', {}, el('span', { class: 'sw s2' }), `${d.commits} commit${d.commits === 1 ? '' : 's'} · ${d.lines} lines`));
+    tip.hidden = false;
+    const box = wrap.getBoundingClientRect();
+    const x = e.clientX - box.left, yy = e.clientY - box.top;
+    tip.style.left = `${Math.min(box.width - 170, Math.max(0, x + 12))}px`;
+    tip.style.top = `${yy + 12}px`;
+  };
+  const time = dayBars(days, { value: (d) => d.seconds / 3600, fmt: (v, tick) => `${tick ? +v.toFixed(1) : v.toFixed(1)}h`, color: 'var(--series-1)', title: 'Coding time per day', onHover: hover });
+  const work = dayBars(days, { value: (d) => (mode === 'lines' ? d.lines : d.commits), fmt: (v) => `${Math.round(v)}`, color: 'var(--series-2)', title: mode === 'lines' ? 'Lines changed per day' : 'Commits per day', onHover: hover, height: 100, integer: true });
+  charts.push(time, work);
+  const toggle = el('div', { class: 'tabs seg', role: 'group', 'aria-label': 'Commit measure' },
+    [['count', 'Commits'], ['lines', 'Lines']].map(([k, label]) =>
+      el('button', { 'aria-pressed': String(mode === k), onclick: () => { state.evidenceMode = k; renderDetail(); } }, label)));
+  const wrap = el('div', { class: 'vwrap' },
+    el('div', { class: 'vlabel' }, el('span', { class: 'sw s1' }), 'Coding time per day (Hackatime)'), time,
+    el('div', { class: 'vlabel' }, el('span', { class: 'sw s2' }), mode === 'lines' ? 'Lines changed per day' : 'Commits per day', toggle), work,
+    tip);
+  const table = el('details', { class: 'vtable' }, el('summary', {}, 'Show as a table'),
+    el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Day'), el('th', {}, 'Coding'), el('th', {}, 'Commits'), el('th', {}, 'Lines'))),
+      el('tbody', {}, days.map((d) => el('tr', { class: d.seconds && !d.commits ? 'quiet' : null },
+        el('td', {}, shortDay(d.date)), el('td', {}, hours(d.seconds)), el('td', {}, d.commits), el('td', {}, d.lines))))));
+
+  return el('div', { class: 'card evidence' },
+    el('div', { class: 'hh' }, el('h3', {}, 'Commit evidence'), el('span', { class: 'muted small' }, `vs ${hours(claimed)} claimed${E.truncated ? ' · Terra cut the commit list short' : ''}`)),
+    tiles,
+    days.length ? wrap : el('p', { class: 'muted small' }, 'No daily data from Terra for this ship.'),
+    days.length ? table : null);
 }
 
 // ---------- journals & commits ----------
@@ -435,6 +563,7 @@ function commitRow(a, c, journal, showJournal) {
   el('summary', {},
     el('code', { class: 'sha' }, c.sha.slice(0, 7)),
     el('span', { class: 'msg', title: c.message }, (c.message || '(no message)').split('\n')[0]),
+    KIND_TAG[a.evidence?.kinds?.[c.sha]] ? el('span', { class: `ktag ${a.evidence.kinds[c.sha]}`, title: KIND_TAG[a.evidence.kinds[c.sha]][1] }, KIND_TAG[a.evidence.kinds[c.sha]][0]) : null,
     showJournal ? el('span', { class: `jtag${journal ? '' : ' none'}`, title: journal ? journal.title : 'No journal claims this commit' },
       journal ? `#${journal.n} ${journal.title || 'journal'}` : 'no journal') : null,
     el('span', { class: 'stat' }, el('span', { class: 'add' }, `+${c.additions}`), ' ', el('span', { class: 'del' }, `−${c.deletions}`)),
@@ -535,7 +664,7 @@ function approveForm(a) {
   const need = a.approve;
   const dry = state.status.dryRun;
   const d = drafts.get(a.sid) || {
-    builtWhat: need.builtWhat, projectReview: '', updateJustification: '', flagReasons: {},
+    builtWhat: need.builtWhat, projectReview: need.projectReview || '', updateJustification: '', flagReasons: {},
     multiplier: need.multiplier, deflationHours: +(need.deflationSeconds / 3600).toFixed(2), deflationReason: need.deflationReason,
     note: need.noteToMaker, file: null, videoId: null,
   };

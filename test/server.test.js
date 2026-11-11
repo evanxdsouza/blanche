@@ -196,3 +196,46 @@ test('status reads the Terra token expiry', async () => {
   const s = await get('/api/status');
   assert.equal(s.terraTokenExpires, null); // demo mode
 });
+
+test('commit evidence: kinds, per-hour rate, daily series and signals', async () => {
+  const { commitEvidence, kindOf, dayOffsetMs } = require('../server/evidence');
+  assert.equal(kindOf('Add files via upload'), 'web-upload');
+  assert.equal(kindOf('Update main.py'), 'vague');
+  assert.equal(kindOf('Update README.md'), 'readme');
+  assert.equal(kindOf('Merge pull request #1 from a/b'), 'merge');
+  assert.equal(kindOf('Added collision with walls'), 'content');
+  assert.equal(dayOffsetMs({ start: '2026-11-02T05:00:00.000Z' }), 5 * 3600e3);
+
+  const e = commitEvidence({
+    window: { start: '2026-11-02T05:00:00.000Z' },
+    heatmap: [{ date: '2026-11-02', ship: [0, 0, 7200] }, { date: '2026-11-03', ship: [3600] }],
+    commits: [
+      // 03:00Z on the 3rd is still the 2nd locally (UTC-5)
+      { sha: 'a1', message: 'Start', committedAt: '2026-11-03T03:00:00Z', additions: 10, deletions: 0 },
+      { sha: 'a2', message: 'Big engine', committedAt: '2026-11-02T20:00:00Z', additions: 90, deletions: 0 },
+      { sha: 'a3', message: 'Add files via upload', committedAt: '2026-11-02T21:00:00Z', additions: 5, deletions: 0 },
+    ],
+  }, { claimedSeconds: 10 * 3600 });
+  assert.equal(e.counts.content, 2);
+  assert.equal(e.counts['web-upload'], 1);
+  assert.equal(e.perHour, 0.2);
+  assert.equal(e.largest.sha, 'a2');
+  assert.equal(e.largest.share, 0.9);
+  assert.deepEqual(e.days.map((d) => [d.date, d.seconds, d.commits]), [['2026-11-02', 7200, 3], ['2026-11-03', 3600, 0]]);
+  assert.equal(e.quietSeconds, 3600);
+
+  const a = await get(`/api/analyze/${uuid(12)}`); // mostly web uploads
+  assert.ok(a.findings.some((f) => f.id === 'web-uploads'), JSON.stringify(a.findings.map((f) => f.id)));
+  assert.equal(a.verdict, 'changes'); // note-only: Streamlit still decides it
+  assert.ok(a.evidence.days.length >= 4);
+  assert.match(a.approve.projectReview, /\[describe what they built\]/);
+});
+
+test('approve refuses a justification with [bracketed] gaps left in', async () => {
+  const sid = uuid(13);
+  const a = await get(`/api/analyze/${sid}`);
+  const form = goodForm({ videoId: (await stage(sid)).body.id, projectReview: a.approve.projectReview });
+  const r = await json(await post(`/api/decide/${sid}`, { verdict: 'approve', note: '', form }));
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /bracketed/);
+});

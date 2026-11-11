@@ -35,6 +35,18 @@ const commits = (n, spanH, startH = 72, journals = []) => Array.from({ length: n
   devlogId: journals.length && i < n - 2 ? journals[Math.min(journals.length - 1, Math.floor((i * 3) / n))] : null,
 }));
 
+// local midnight (UTC-5 like a real Terra window) n days back, and an hourly coding heatmap that
+// spreads the ship's hours over the last 4 days, with one day of coding and no commits
+const dayStart = (n) => { const d = new Date(now - n * 86400e3); d.setUTCHours(5, 0, 0, 0); return d.toISOString(); };
+const heatmapFor = (s) => [4, 3, 2, 1].map((n, i) => {
+  const date = new Date(Date.parse(dayStart(n)) - 5 * H * 1000).toISOString().slice(0, 10);
+  const share = [0.3, 0.25, 0.3, 0.15][i];
+  const ship = Array(24).fill(0);
+  let left = Math.round(s.hours * H * share);
+  for (let h = 14; left > 0 && h < 24; h++) { ship[h] = Math.min(3600, left); left -= ship[h]; }
+  return { date, ship, other: Array(24).fill(0) };
+});
+
 const journalsFor = (s) => {
   const titles = ['Day 1: getting started', 'Day 2: the hard part', 'Day 3: polish and ship'];
   const bodies = [
@@ -110,9 +122,13 @@ function detail(s) {
       version: 1, builtAt: ago(19),
       data: {
         time: { creditedSeconds: s.hours * H, totalSeconds: s.hours * H, aiSeconds: s.n === 13 ? s.hours * H * 0.2 : 0 },
-        commits: s.n === 2 ? commits(1, 0, 72, ids) : s.n === 9 ? commits(6, 0.5, 72, ids) : commits(8 + s.n, 60, 72, ids),
+        commits: s.n === 2 ? commits(1, 0, 72, ids) : s.n === 9 ? commits(6, 0.5, 72, ids)
+          : s.n === 12 ? commits(8 + s.n, 60, 72, ids).map((c, i) => (i % 3 ? { ...c, message: 'Add files via upload', additions: 400 } : c))
+          : commits(8 + s.n, 60, 72, ids),
         files: [{ path: 'src/main.js', seconds: s.hours * H, status: 'head' }],
         sessions: [{ start: ago(30), end: ago(28), seconds: 2 * H }],
+        window: { start: dayStart(4), end: ago(1) },
+        heatmap: heatmapFor(s),
         unifiedUrlMatches: extra.unified || [],
       },
     },
