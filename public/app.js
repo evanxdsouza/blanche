@@ -72,7 +72,7 @@ async function loadStatus() {
   state.status = await api('/api/status');
   const s = state.status;
   $('#guide-link').href = s.guidelines;
-  $('#who').replaceChildren(s.me ? `${s.me.username}${s.me.isAdmin ? ' · admin' : ''}${s.demo ? ' · demo' : ''}` : '', ' ', tokenPill(s));
+  $('#who').replaceChildren(...[s.me ? `${s.me.username}${s.me.isAdmin ? ' · admin' : ''}${s.demo ? ' · demo' : ''}` : '', ' ', tokenPill(s)].filter((x) => x != null));
   renderDry();
   const b = $('#banner');
   const left = s.terraTokenExpires ? Date.parse(s.terraTokenExpires) - Date.now() : null;
@@ -267,20 +267,41 @@ async function scan() {
 $('#scan').addEventListener('click', scan);
 
 // ---------- detail ----------
+// On a phone the list and the ship take turns filling the screen: opening a ship pushes a history
+// entry, so the back button (or "← Ships") returns to the list.
+const phone = () => matchMedia('(max-width: 760px)').matches;
+function showShip() {
+  if (document.body.classList.contains('viewing')) return;
+  document.body.classList.add('viewing');
+  if (phone()) history.pushState({ ship: true }, '');
+}
+function showList() {
+  if (!document.body.classList.contains('viewing')) return;
+  if (history.state && history.state.ship) history.back(); // popstate does the rest
+  else document.body.classList.remove('viewing');
+}
+window.addEventListener('popstate', () => {
+  document.body.classList.remove('viewing');
+  document.querySelector(`#list li[data-id="${state.selected}"]`)?.scrollIntoView({ block: 'center' });
+});
+const backBar = () => el('div', { class: 'backbar' }, el('button', { class: 'back', onclick: showList }, '← Ships'));
+
 async function select(sid) {
   state.selected = sid;
   state.verdictTab = null;
   render();
+  showShip();
   if (!state.analyses.has(sid)) {
-    $('#detail').replaceChildren(el('p', { class: 'empty' }, 'Checking this ship…'));
+    $('#detail').replaceChildren(backBar(), el('p', { class: 'empty' }, 'Checking this ship…'));
     try { await analyze(sid); } catch (e) {
-      $('#detail').replaceChildren(el('p', { class: 'empty' }, `Couldn't check this ship: ${e.message}`));
+      $('#detail').replaceChildren(backBar(), el('p', { class: 'empty' }, `Couldn't check this ship: ${e.message}`));
       return;
     }
     render();
   }
   renderDetail();
   $('#detail').scrollTop = 0;
+  if (phone()) window.scrollTo(0, 0);
 }
 
 function renderDetail() {
@@ -329,7 +350,7 @@ function renderDetail() {
     s.screenshotUrl ? el('img', { class: 'shot', src: s.screenshotUrl, alt: 'Ship screenshot', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: (e) => e.target.remove() }) : null,
     r.readmeExcerpt ? el('details', { class: 'readme' }, el('summary', {}, 'README'), el('pre', {}, r.readmeExcerpt)) : null);
 
-  $('#detail').replaceChildren(head, links, el('div', { class: 'grid' }, el('div', {}, reshipCard(a), findings, facts), decideCard(a, tab)), evidenceCard(a), historyCard(a));
+  $('#detail').replaceChildren(backBar(), head, links, el('div', { class: 'grid' }, el('div', {}, reshipCard(a), findings, facts), decideCard(a, tab)), evidenceCard(a), historyCard(a));
 }
 
 // ---------- re-ships ----------
@@ -474,6 +495,12 @@ function evidenceCard(a) {
   const toggle = el('div', { class: 'tabs seg', role: 'group', 'aria-label': 'Commit measure' },
     [['count', 'Commits'], ['lines', 'Lines']].map(([k, label]) =>
       el('button', { 'aria-pressed': String(mode === k), onclick: () => { state.evidenceMode = k; renderDetail(); } }, label)));
+  // touch screens never send "mouse left": a tap anywhere outside the charts clears the tooltip
+  const clearOnTapOutside = (e) => {
+    if (!wrap.isConnected) return document.removeEventListener('pointerdown', clearOnTapOutside);
+    if (!wrap.contains(e.target)) hover(-1);
+  };
+  document.addEventListener('pointerdown', clearOnTapOutside);
   const wrap = el('div', { class: 'vwrap' },
     el('div', { class: 'vlabel' }, el('span', { class: 'sw s1' }), 'Coding time per day (Hackatime)'), time,
     el('div', { class: 'vlabel' }, el('span', { class: 'sw s2' }), mode === 'lines' ? 'Lines changed per day' : 'Commits per day', toggle), work,
@@ -758,7 +785,7 @@ async function decide(a, verdict, input, btn, out) {
       state.items = state.items.filter((i) => i.id !== a.sid);
       state.analyses.delete(a.sid);
       const next = visible()[0];
-      if (next) select(next.id); else { state.selected = null; render(); $('#detail').replaceChildren(el('p', { class: 'empty' }, 'Bucket cleared.')); }
+      if (next) select(next.id); else { state.selected = null; render(); showList(); $('#detail').replaceChildren(el('p', { class: 'empty' }, 'Bucket cleared.')); }
     }
   } catch (e) {
     if (verdict === 'approve' && /expired/.test(e.message)) input.videoId = null; // re-upload next time
