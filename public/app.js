@@ -115,13 +115,39 @@ function renderDry() {
   d.setAttribute('aria-pressed', String(on));
 }
 
+// Blanche's own confirmation dialog. The browser's confirm() is blocked by many phone browsers (in-app
+// browsers, or after a dialog was dismissed once) and then silently counts as "Cancel".
+function ask(title, text, okLabel, tone = '') {
+  return new Promise((resolve) => {
+    const d = el('dialog', { class: 'ask', 'aria-labelledby': 'ask-title' });
+    const done = (v) => { d.close(); d.remove(); resolve(v); };
+    d.append(
+      el('h2', { id: 'ask-title' }, title),
+      text ? el('p', {}, text) : null,
+      el('div', { class: 'row' },
+        el('button', { type: 'button', onclick: () => done(false) }, 'Cancel'),
+        el('button', { type: 'button', class: `primary ${tone}`, onclick: () => done(true) }, okLabel)));
+    d.addEventListener('cancel', (e) => { e.preventDefault(); done(false); }); // Esc / back gesture
+    document.body.append(d);
+    d.showModal();
+  });
+}
+
 $('#dry').addEventListener('click', async () => {
+  const btn = $('#dry');
   const next = !state.status.dryRun;
-  if (!next && !state.status.demo && !confirm('Turn dry run off? Decisions will be sent to Terra for real.')) return;
-  await api('/api/settings', { method: 'POST', body: { dryRun: next } });
-  state.status.dryRun = next;
-  renderDry();
-  renderDetail();
+  if (!next && !state.status.demo
+    && !(await ask('Turn dry run off?', 'Decisions will be sent to Terra for real.', 'Go live', 'danger'))) return;
+  btn.disabled = true;
+  try {
+    await api('/api/settings', { method: 'POST', body: { dryRun: next } });
+    state.status.dryRun = next;
+    renderDry();
+    renderDetail();
+    toast(next ? 'Dry run is on: decisions only show their requests.' : 'Live: decisions go to Terra.');
+  } catch (e) {
+    toast(`Couldn't change dry run: ${e.message}`, true);
+  } finally { btn.disabled = false; }
 });
 
 $('#settings-btn').addEventListener('click', () => {
@@ -755,8 +781,9 @@ async function stageVideo(a, d) {
 
 async function decide(a, verdict, input, btn, out) {
   const dry = state.status.dryRun;
-  if (!dry && verdict === 'reject' && !confirm(`Reject "${a.ship.title}" for good?`)) return;
-  if (!dry && verdict === 'approve' && !confirm(`Approve "${a.ship.title}" at ${input.multiplier}x${Number(input.deflationHours) > 0 ? `, cutting ${input.deflationHours}h` : ''}?`)) return;
+  if (!dry && verdict === 'reject' && !(await ask(`Reject "${a.ship.title}"?`, "A rejection is final: the player can't reship this project.", 'Reject', 'danger'))) return;
+  if (!dry && verdict === 'approve' && !(await ask(`Approve "${a.ship.title}"?`,
+    `At ${input.multiplier}x${Number(input.deflationHours) > 0 ? `, cutting ${input.deflationHours}h` : ''}.`, 'Approve', 'good'))) return;
   btn.disabled = true;
   const label = btn.textContent;
   try {

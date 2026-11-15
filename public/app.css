@@ -291,3 +291,11 @@ svg.bars .hit { fill: transparent; cursor: crosshair; }
 .vtable tr.quiet td { color: var(--changes); }
 .ktag { font-size: 10px; border-radius: 4px; padding: 1px 5px; white-space: nowrap; background: var(--warn-bg); color: var(--warn); }
 .ktag.web-upload { background: var(--changes-bg); color: var(--changes); }
+
+/* confirmation dialog (instead of the browser's confirm(), which phones can block) */
+dialog.ask { width: min(380px, 92vw); }
+dialog.ask h2 { font-size: 18px; margin: 0 0 6px; }
+dialog.ask p { margin: 0 0 16px; color: var(--muted); line-height: 1.45; }
+dialog.ask .row button { min-height: 40px; padding: 8px 16px; }
+button.primary.danger { background: var(--reject); border-color: var(--reject); color: #fff; }
+button.primary.good { background: var(--clean); border-color: var(--clean); color: var(--accent-ink); }
